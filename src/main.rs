@@ -2,38 +2,68 @@
 //!
 //! Open `http://localhost:8080/` in browser to test.
 
-use actix_web::{middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer, Responder};
-use actix_web_actors::ws;
+use clap::{Command, arg};
+use log::error;
+use server::{start_server, ServerConfig};
+use client::{start_client, ClientConfig};
 
+mod client;
 mod server;
-use self::server::MyWebSocket;
 
-async fn index() -> impl Responder {
-    format!("")
-}
-
-/// WebSocket handshake and start `MyWebSocket` actor.
-async fn echo_ws(req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
-    ws::start(MyWebSocket::new(), &req, stream)
+fn cli() -> Command {
+    let port_arg = arg!(-p - -port <PORT> "Specify a port to listen or connect to").value_parser(clap::value_parser!(u16).range(3000..)).required(false);
+    let host_arg = arg!(-H - -host <HOST> "Specify a host to listen or connect to").required(false);
+    Command::new("hanode")
+        .about("A server for manage node")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(
+            Command::new("server")
+               .about("Start a node")
+               .arg(&port_arg)
+               .arg(&host_arg)
+        )
+        .subcommand(
+            Command::new("client")
+               .about("Stop a node")
+               .arg(arg!(--"server-url" <SERVER> "specify server url").required(false))
+               .arg(&host_arg)
+        )
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
-
-    log::info!("starting HTTP server at http://localhost:8080");
-
-    HttpServer::new(|| {
-        App::new()
-            // WebSocket UI HTML file
-            .service(web::resource("/").to(index))
-            // websocket route
-            .service(web::resource("/ws").route(web::get().to(echo_ws)))
-            // enable logger
-            .wrap(middleware::Logger::default())
-    })
-    .workers(2)
-    .bind(("127.0.0.1", 8080))?
-    .run()
-    .await
+    let matches = cli().get_matches();
+    match matches.subcommand() {
+        Some(("server", sub_matches)) => {
+            let port = sub_matches.get_one::<u16>("port");
+            let p: u16 = match port {
+                Some(port) => port.clone(),
+                None => 8080,
+            };
+            let host = sub_matches.get_one::<String>("host");
+            let h = match host {
+                Some(host) => host.clone(),
+                None => "127.0.0.1".to_string(),
+            };
+            start_server(&ServerConfig {
+                port: p,
+                host: h,
+            }).await
+        },
+        Some(("client", sub_matches)) => {
+            let server_url = match sub_matches.get_one::<String>("server-url") {
+                Some(s) => s.clone(),
+                None => "ws://127.0.0.1:8080/ws".to_string(),
+            };
+            start_client(&ClientConfig {
+                server_url
+            }).await;
+            Ok(())
+        },
+        _ => {
+            error!("not implemented");
+            Ok(())
+        },
+    }
 }

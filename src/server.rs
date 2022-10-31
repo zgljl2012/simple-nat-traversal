@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use actix::prelude::*;
+use actix_web::{Responder, HttpRequest, web, HttpResponse, Error, HttpServer, App, middleware};
 use actix_web_actors::ws;
 
 /// How often heartbeat pings are sent
@@ -76,3 +77,38 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWebSocket {
         }
     }
 }
+
+async fn index() -> impl Responder {
+    format!("")
+}
+
+/// WebSocket handshake and start `MyWebSocket` actor.
+async fn echo_ws(req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
+    ws::start(MyWebSocket::new(), &req, stream)
+}
+
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+}
+
+pub async fn start_server(config: &ServerConfig) -> std::io::Result<()> {
+    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+
+    log::info!("starting HTTP server at http://{}:{:?}", config.host, config.port);
+
+    HttpServer::new(|| {
+        App::new()
+            // WebSocket UI HTML file
+            .service(web::resource("/").to(index))
+            // websocket route
+            .service(web::resource("/ws").route(web::get().to(echo_ws)))
+            // enable logger
+            .wrap(middleware::Logger::default())
+    })
+    .workers(2)
+    .bind((config.host.as_str(), config.port))?
+    .run()
+    .await
+}
+

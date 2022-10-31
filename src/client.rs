@@ -8,8 +8,11 @@ use futures_util::{SinkExt as _, StreamExt as _};
 use tokio::{select, sync::mpsc};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-#[actix_web::main]
-async fn main() {
+pub struct ClientConfig {
+    pub server_url: String,
+}
+
+pub async fn start_client(config: &ClientConfig) {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
     log::info!("starting echo WebSocket client");
@@ -30,7 +33,7 @@ async fn main() {
     });
 
     let (res, mut ws) = awc::Client::new()
-        .ws("ws://127.0.0.1:8080/ws")
+        .ws(format!("{}", config.server_url))
         .connect()
         .await
         .unwrap();
