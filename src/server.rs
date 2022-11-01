@@ -2,8 +2,9 @@
 
 use std::sync::Arc;
 
+use actix_web::cookie::time::error;
 use log::{info, error, debug};
-use tokio::{net::{TcpListener, TcpStream}, sync::{RwLock, mpsc::{self, UnboundedSender}}, io::{AsyncReadExt, AsyncWriteExt}};
+use tokio::{net::{TcpListener, TcpStream}, sync::{RwLock, mpsc::{self, UnboundedSender, UnboundedReceiver}}, io::{AsyncReadExt, AsyncWriteExt}, select};
 
 use crate::{protocols::{parse_protocol, ProtocolType}, nat::{NatServer, Message}};
 
@@ -17,7 +18,7 @@ pub struct Context {
     inited: Arc<RwLock<bool>>
 }
 
-async fn handle_client(ctx: Context, nat_server: Arc<RwLock<NatServer>>, sender: Arc<RwLock<UnboundedSender<Message>>>, mut stream: TcpStream) -> std::io::Result<()> {
+async fn handle_client(ctx: Context, nat_server: Arc<RwLock<NatServer>>, sender: Arc<RwLock<UnboundedSender<Message>>>, receiver: Arc<RwLock<UnboundedReceiver<Message>>>, mut stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
     // Parse the first line
     const BATCH_SIZE: usize = 64;
     let mut buffer = [0;BATCH_SIZE];
@@ -85,6 +86,25 @@ async fn handle_client(ctx: Context, nat_server: Arc<RwLock<NatServer>>, sender:
             // 将请求转发给客户端
             sender.write().await.send(Message { protocol: ProtocolType::HTTP, body: bytes}).unwrap();
             // 获取所有的请求二进制
+            let mut recv = receiver.write().await;
+            select! {
+                msg = recv.recv() => match msg {
+                    Some(msg) => {
+                        match stream.write(&msg.body).await {
+                            Ok(_) => {
+                                info!("Http response successfully");
+                            },
+                            Err(e) => {
+                                error!("Write error: {}", e);
+                            }
+                        }
+                    },
+                    None => {
+                        error!("Receive empty message")
+                    },
+                }
+            }
+            
         });
     }
     Ok(())
@@ -100,9 +120,11 @@ pub async fn start_server(config: &ServerConfig) -> std::io::Result<()> {
     );
 
     let listener = TcpListener::bind(format!("{}:{:?}", config.host, config.port)).await?;
-    let (sender, receiver) = mpsc::unbounded_channel::<Message>();
-    let nat_server: Arc<RwLock<NatServer>> = Arc::new(RwLock::new(NatServer::new(receiver)));
+    let (sender, external_receiver) = mpsc::unbounded_channel::<Message>();
+    let (external_sender, receiver) = mpsc::unbounded_channel::<Message>();
+    let nat_server: Arc<RwLock<NatServer>> = Arc::new(RwLock::new(NatServer::new(Arc::new(RwLock::new(external_sender)), external_receiver)));
     let sender = Arc::new(RwLock::new(sender));
+    let receiver = Arc::new(RwLock::new(receiver));
     let ctx = Context {
         inited: Arc::new(RwLock::new(false)),
     };
@@ -110,6 +132,6 @@ pub async fn start_server(config: &ServerConfig) -> std::io::Result<()> {
     loop {
         let ns = nat_server.clone();
         let (socket, _) = listener.accept().await?;
-        let _ = handle_client(ctx.clone(), ns, sender.clone(), socket).await;
+        let _ = handle_client(ctx.clone(), ns, sender.clone(), receiver.clone(), socket).await;
     }
 }

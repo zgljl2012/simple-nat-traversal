@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-
 #[derive(Debug, Clone)]
 pub struct RequestLine {
     pub method: String,
@@ -51,6 +50,7 @@ impl HttpRequest {
         }
     }
 }
+
 
 #[cfg(test)]
 mod tests {
