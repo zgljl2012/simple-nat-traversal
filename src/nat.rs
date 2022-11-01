@@ -1,6 +1,6 @@
 // NAT protocol
 
-use core::panic;
+use core::{panic};
 use std::{
     sync::{Arc}, time::Duration,
 };
@@ -17,9 +17,8 @@ const PING: [u8; 1] = [0x0];
 // Pong message
 const PONG: [u8; 1] = [0x1];
 
-
+#[derive(Debug, Clone)]
 struct Message {
-    pub size: u32,
     pub protocol: ProtocolType,
     pub body: Vec<u8>
 }
@@ -34,10 +33,20 @@ impl Message {
             Ok(_) => {
                 let data_size = utils::as_u32_be(buffer.as_slice());
                 debug!("You received {:?} bytes from NAT client", data_size);
+                // read protocol type
+                let mut protocol_type_buf = Vec::with_capacity(1);
+                stream.try_read_buf(&mut protocol_type_buf).unwrap();
+                let protocol_type = match ProtocolType::from_slice(protocol_type_buf.as_slice()) {
+                    Some(pt) => pt,
+                    None => {
+                        return Err(format!("Uncognizaed protocol type: {:?}", utils::as_u32_be(protocol_type_buf.as_slice())).into());
+                    }
+                };
+
                 // Read other bytes
                 let mut data = Vec::with_capacity(data_size as usize);
                 stream.try_read_buf(&mut data).unwrap();
-                Ok(Some(Message { size: data_size, protocol: ProtocolType::NAT, body: data }))
+                Ok(Some(Message { protocol: protocol_type, body: data }))
             },
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 Ok(None)
@@ -51,22 +60,23 @@ impl Message {
 
 pub struct NatServer {
     stream: Option<NatStream>,
-    sender: Arc<RwLock<UnboundedSender<Vec<u8>>>>,
-    receiver: UnboundedReceiver<Vec<u8>>,
+    sender: Arc<RwLock<UnboundedSender<Message>>>,
+    receiver: UnboundedReceiver<Message>,
 }
 
 // Write standard message to stream
-async fn write(stream: &TcpStream, buf: &[u8]) {
-    let size: u32 = buf.len() as u32;
+async fn write(stream: &TcpStream, msg: &Message) {
+    let size: u32 = msg.body.len() as u32;
     let size_arr = utils::u32_to_be(size);
-    let r: Vec<u8> = [&size_arr, buf].concat();
+    let r: Vec<u8> = [&size_arr, msg.protocol.bytes().to_vec().as_slice(),
+        msg.body.as_slice()].concat();
     stream.writable().await.unwrap();
     stream.try_write(&r.as_slice()).unwrap();
 }
 
 impl NatServer {
     pub fn new() -> NatServer {
-        let (sender, receiver) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (sender, receiver) = mpsc::unbounded_channel::<Message>();
         Self { stream: None, receiver: receiver, sender: Arc::new(RwLock::new(sender))}
     }
 
@@ -121,10 +131,10 @@ impl NatServer {
                     match Message::from_stream(&stream).await {
                         Ok(msg) => match msg {
                             Some(msg) => {
+                                info!("Received {:?}", msg.protocol);
                                 if msg.body.as_slice() == PING {
                                     info!("You received PING from NAT client");
-                                    // self.pong().await;
-                                    sender.send(PONG.to_vec()).unwrap();
+                                    sender.send(Message { protocol: ProtocolType::NAT, body: PONG.to_vec() }).unwrap();
                                 }
                             },
                             None => {}
@@ -136,8 +146,8 @@ impl NatServer {
                     }
                 },
                 msg = receiver.recv() => match msg {
-                    Some(buf) => {
-                        write(&stream, buf.as_slice()).await;
+                    Some(msg) => {
+                        write(&stream, &msg).await;
                     },
                     None => todo!(),
                 }
@@ -150,13 +160,13 @@ impl NatServer {
 // Client protocol
 pub struct NatClient {
     stream: NatStream,
-    sender: Arc<RwLock<UnboundedSender<Vec<u8>>>>,
-    receiver: UnboundedReceiver<Vec<u8>>,
+    sender: Arc<RwLock<UnboundedSender<Message>>>,
+    receiver: UnboundedReceiver<Message>,
 }
 
 impl NatClient {
     pub async fn new(server_url: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let (sender, receiver) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (sender, receiver) = mpsc::unbounded_channel::<Message>();
         let stream = TcpStream::connect(&server_url).await?;
         Ok(Self {
             sender: Arc::new(RwLock::new(sender)),
@@ -197,7 +207,7 @@ impl NatClient {
         task::spawn(async move {
             let mut interval = time::interval(Duration::from_secs(5));
             loop {
-                sender.write().await.send(PING.to_vec()).unwrap();
+                sender.write().await.send(Message{protocol: ProtocolType::NAT, body: PING.to_vec()}).unwrap();
                 interval.tick().await;
             }
         });
@@ -216,6 +226,7 @@ impl NatClient {
                     match Message::from_stream(&stream).await {
                         Ok(msg) => match msg {
                             Some(msg) => {
+                                info!("Received {:?}", msg.protocol);
                                 if msg.body.as_slice() == PONG {
                                     info!("You received PONG from NAT server");
                                 }
@@ -229,11 +240,9 @@ impl NatClient {
                     }
                 },  
                 msg = self.receiver.recv() => match msg {
-                    Some(data) => {
-                        // Send PING
-                        if data.as_slice() == PING {
-                            write(&stream, data.as_slice()).await;
-                        }
+                    Some(msg) => {
+                        // Send to server
+                        write(&stream, &msg).await;
                     },
                     None => {},
                 }

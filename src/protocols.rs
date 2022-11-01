@@ -1,5 +1,7 @@
 // 协议
 
+use std::{fmt::{Display, self}};
+
 pub trait Protocol {
     fn validate(&self, line: String) -> bool;
     fn name(&self) -> &str;
@@ -74,7 +76,7 @@ pub enum ProtocolType {
 }
 
 impl ProtocolType {
-    fn protocol(&self) -> Box<dyn Protocol> {
+    pub fn protocol(&self) -> Box<dyn Protocol> {
         match *self {
             ProtocolType::SSH => SshProtocol::new(),
             ProtocolType::HTTP => HttpProtocol::new(),
@@ -82,11 +84,30 @@ impl ProtocolType {
         }
     }
 
-    fn byte (&self) -> [u8; 1] {
+    pub fn bytes (&self) -> [u8; 1] {
         match *self {
             ProtocolType::NAT => [0x0],
             ProtocolType::HTTP => [0x1],
             ProtocolType::SSH => [0x2]
+        }
+    }
+
+    pub fn from_slice(bytes: &[u8]) -> Option<ProtocolType> {
+        match bytes {
+            [0x0] => Some(ProtocolType::NAT),
+            [0x1] => Some(ProtocolType::HTTP),
+            [0x2] => Some(ProtocolType::SSH),
+            _ => None
+        }
+    }
+}
+
+impl Display for ProtocolType {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            ProtocolType::HTTP => fmt.write_str("HTTP"),
+            ProtocolType::NAT => fmt.write_str("NAT"),
+            ProtocolType::SSH => fmt.write_str("SSH")
         }
     }
 }
