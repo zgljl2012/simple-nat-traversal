@@ -8,7 +8,7 @@ use std::{
 use log::{info, error, debug};
 use tokio::{sync::{RwLock, mpsc::{self, UnboundedSender, UnboundedReceiver}}, net::{TcpStream}, select, task, time};
 
-use crate::{utils, protocols::ProtocolType};
+use crate::{utils, protocols::ProtocolType, http::HttpRequest};
 
 pub type NatStream = Arc<RwLock<TcpStream>>;
 
@@ -28,7 +28,7 @@ impl Message {
         let mut buffer = Vec::with_capacity(4);
         match stream.try_read_buf(&mut buffer) {
             Ok(0) => {
-                Err("Server closed connection".into())
+                Err("Connection closed".into())
             },
             Ok(_) => {
                 let data_size = utils::as_u32_be(buffer.as_slice());
@@ -82,10 +82,6 @@ impl NatServer {
     }
 
     pub fn init(&mut self, stream: NatStream) {
-        // Only can init once
-        if self.stream.is_some() {
-            return;
-        }
         self.stream = Some(stream);
     }
 
@@ -98,7 +94,7 @@ impl NatServer {
         stream.writable().await?;
         match stream.try_write(msg.as_bytes()) {
             Ok(n) => {
-                info!("Send text {:?}({:?} bytes) successfully", msg, n);
+                debug!("Send text {:?}({:?} bytes) successfully", msg, n);
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
             }
@@ -129,9 +125,9 @@ impl NatServer {
                     match Message::from_stream(&stream).await {
                         Ok(msg) => match msg {
                             Some(msg) => {
-                                info!("Received {:?}", msg.protocol);
+                                debug!("Received {:?}", msg.protocol);
                                 if msg.body.as_slice() == PING {
-                                    info!("You received PING from NAT client");
+                                    debug!("You received PING from NAT client");
                                     sender.write().await.send(Message { protocol: ProtocolType::NAT, body: PONG.to_vec() }).unwrap();
                                 }
                             },
@@ -218,6 +214,22 @@ impl NatClient {
         Ok(())
     }
 
+    async fn handle_http(&self, msg: &Message) -> Result<(), Box<dyn std::error::Error>> {
+        // 取出 Host
+        let text = std::str::from_utf8(msg.body.as_slice()).unwrap().trim_matches('\u{0}').to_string();
+        info!("{:?}", text);
+        let req = HttpRequest::from_utf8(text.as_str());
+
+        info!("Redirect request to {:?}", req.request_line.url);
+
+        // 转发给指定的 Host
+        let mut body = reqwest::get(req.request_line.url)
+            .await?;
+            // .bytes().await?;
+        // info!("--> {:?}", std::str::from_utf8(a.to_vec().as_slice()).unwrap());
+        Ok(())
+    }
+
     pub async fn run_forever(&mut self) {
         // Wait for NAT server
         let stream = self.stream.write().await;
@@ -230,9 +242,17 @@ impl NatClient {
                     match Message::from_stream(&stream).await {
                         Ok(msg) => match msg {
                             Some(msg) => {
-                                info!("Received {:?}", msg.protocol);
+                                debug!("Received {:?}", msg.protocol);
                                 if msg.body.as_slice() == PONG {
-                                    info!("You received PONG from NAT server");
+                                    debug!("You received PONG from NAT server");
+                                }
+                                if msg.protocol == ProtocolType::HTTP {
+                                    match self.handle_http(&msg).await {
+                                        Ok(_) => {},
+                                        Err(e) => {
+                                            error!("Redirect http request failed: {:?}", e);
+                                        }
+                                    }
                                 }
                             },
                             None => {}

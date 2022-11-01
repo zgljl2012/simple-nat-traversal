@@ -55,6 +55,7 @@ async fn handle_client(ctx: Context, nat_server: Arc<RwLock<NatServer>>, sender:
             *ctx.inited.write().await = true;
             // 通信
             nat_server.write().await.run_forever().await;
+            *ctx.inited.write().await = false;
         });
     } else if protocol.name() == "HTTP" {
         if *ctx.inited.read().await == false {

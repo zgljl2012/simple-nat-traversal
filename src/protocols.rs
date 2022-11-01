@@ -68,7 +68,7 @@ impl Protocol for NatProtocol {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ProtocolType {
     NAT, // Nat client
     SSH,

@@ -12,6 +12,7 @@ mod server;
 mod protocols;
 mod nat;
 mod utils;
+mod http;
 
 fn cli() -> Command {
     let port_arg = arg!(-p - -port <PORT> "Specify a port to listen or connect to").value_parser(clap::value_parser!(u16).range(3000..)).required(false);
