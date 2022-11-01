@@ -1,12 +1,7 @@
 //! Simple websocket client.
 
-use std::{io, thread};
-
-use actix_web::web::Bytes;
-use awc::ws;
-use futures_util::{SinkExt as _, StreamExt as _};
-use tokio::{select, sync::mpsc};
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use std::{net::TcpStream, io::{Write, Read}, time::Duration};
+use std::net::{SocketAddr};
 
 pub struct ClientConfig {
     pub server_url: String,
@@ -14,61 +9,26 @@ pub struct ClientConfig {
 
 pub async fn start_client(config: &ClientConfig) {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
-
-    log::info!("starting echo WebSocket client");
-
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    let mut cmd_rx = UnboundedReceiverStream::new(cmd_rx);
-
-    // run blocking terminal input reader on separate thread
-    let input_thread = thread::spawn(move || loop {
-        let mut cmd = String::with_capacity(32);
-
-        if io::stdin().read_line(&mut cmd).is_err() {
-            log::error!("error reading line");
-            return;
-        }
-
-        cmd_tx.send(cmd).unwrap();
-    });
-
-    let (res, mut ws) = awc::Client::new()
-        .ws(format!("{}", config.server_url))
-        .connect()
-        .await
-        .unwrap();
-
-    log::debug!("response: {res:?}");
-    log::info!("connected; server will echo messages sent");
-
-    loop {
-        select! {
-            Some(msg) = ws.next() => {
-                match msg {
-                    Ok(ws::Frame::Text(txt)) => {
-                        // log echoed messages from server
-                        log::info!("Server: {txt:?}")
-                    }
-
-                    Ok(ws::Frame::Ping(_)) => {
-                        // respond to ping probes
-                        ws.send(ws::Message::Pong(Bytes::new())).await.unwrap();
-                    }
-
-                    _ => {}
-                }
-            }
-
-            Some(cmd) = cmd_rx.next() => {
-                if cmd.is_empty() {
-                    continue;
-                }
-
-                ws.send(ws::Message::Text(cmd.into())).await.unwrap();
-            }
-
-            else => break
+    log::info!("starting NAT client: {}", config.server_url);
+    let server: SocketAddr = config.server_url.as_str().parse().expect("Unable to parse socket address");
+    let mut stream = TcpStream::connect_timeout(&server, Duration::from_secs(5)).unwrap();
+    // 发送连接语句
+    stream.write("NAT 0.1".as_bytes()).unwrap();
+    // 创建1k的缓冲区，用于接收server发过来的内容
+    let mut buffer = [0;1024];
+    loop { 
+        // 设置超时时间
+        match stream.set_read_timeout(Some(Duration::from_secs(10))) {
+            Ok(_) => {},
+            Err(err) => panic!("Set read timeout failed: {}", err),
+        };
+        // 读取server发过来的内容
+        stream.read(&mut buffer).unwrap();
+        let msg = std::str::from_utf8(&buffer).unwrap();
+        if msg == "OK" {
+            log::info!("Connect to NAT server successfully");
+        } else {
+            panic!("Received unexpected from server: {:?}", msg)
         }
     }
-    input_thread.join().unwrap();
 }
