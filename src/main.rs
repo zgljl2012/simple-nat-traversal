@@ -10,6 +10,8 @@ use client::{start_client, ClientConfig};
 mod client;
 mod server;
 mod protocols;
+mod nat;
+mod utils;
 
 fn cli() -> Command {
     let port_arg = arg!(-p - -port <PORT> "Specify a port to listen or connect to").value_parser(clap::value_parser!(u16).range(3000..)).required(false);
@@ -32,7 +34,7 @@ fn cli() -> Command {
         )
 }
 
-#[actix_web::main]
+#[tokio::main]
 async fn main() -> std::io::Result<()> {
     let matches = cli().get_matches();
     match matches.subcommand() {
@@ -57,7 +59,7 @@ async fn main() -> std::io::Result<()> {
                 Some(s) => s.clone(),
                 None => "ws://127.0.0.1:8080/ws".to_string(),
             };
-            start_client(&ClientConfig {
+            let _ = start_client(&ClientConfig {
                 server_url
             }).await;
             Ok(())
