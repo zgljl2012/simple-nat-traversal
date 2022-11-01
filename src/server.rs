@@ -2,21 +2,27 @@
 
 use std::sync::Arc;
 
-use log::{info, error};
-use tokio::{net::{TcpListener, TcpStream}, sync::RwLock, io::{AsyncReadExt, AsyncWriteExt}};
+use log::{info, error, debug};
+use tokio::{net::{TcpListener, TcpStream}, sync::{RwLock, mpsc::{self, UnboundedSender}}, io::{AsyncReadExt, AsyncWriteExt}};
 
-use crate::{protocols::parse_protocol, nat::NatServer};
+use crate::{protocols::{parse_protocol, ProtocolType}, nat::{NatServer, Message}};
 
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
 }
 
-async fn handle_client(nat_server: Arc<RwLock<NatServer>>, mut stream: TcpStream) -> std::io::Result<()> {
+#[derive(Debug, Clone)]
+pub struct Context {
+    inited: Arc<RwLock<bool>>
+}
+
+async fn handle_client(ctx: Context, nat_server: Arc<RwLock<NatServer>>, sender: Arc<RwLock<UnboundedSender<Message>>>, mut stream: TcpStream) -> std::io::Result<()> {
     // Parse the first line
-    let mut buffer = [0;1024];
+    const BATCH_SIZE: usize = 64;
+    let mut buffer = [0;BATCH_SIZE];
     // 读取server发过来的内容
-    let _ = stream.read(&mut buffer).await.expect("failed to read data from socket");
+    let nsize = stream.read(&mut buffer).await.expect("failed to read data from socket");
     let first_line = std::str::from_utf8(&buffer).unwrap().trim_matches('\u{0}').to_string();
 
     // Parse protocol
@@ -30,7 +36,7 @@ async fn handle_client(nat_server: Arc<RwLock<NatServer>>, mut stream: TcpStream
     info!("You connected to this server with protocol: {}", protocol.name());
     if protocol.name() == "NAT" {
         tokio::spawn(async move {
-            if nat_server.read().await.is_inited() {
+            if *ctx.inited.read().await == true {
                 error!("Only support only one NAT client at a time");
                 stream.try_write("Reject".as_bytes()).unwrap();
                 // shutdown the connect with anther client
@@ -45,16 +51,40 @@ async fn handle_client(nat_server: Arc<RwLock<NatServer>>, mut stream: TcpStream
                     error!("Reply OK to client failed: {:?}", err);
                 },
             };
+            // Init
+            *ctx.inited.write().await = true;
             // 通信
             nat_server.write().await.run_forever().await;
         });
     } else if protocol.name() == "HTTP" {
-        if !nat_server.read().await.is_inited() {
+        if *ctx.inited.read().await == false {
             error!("There is no nat client connected");
             return Ok(());
         }
-        // 将请求转发给客户端
-        // 获取所有的请求二进制
+        tokio::spawn(async move {
+            // 获取所有请求报文
+            let mut bytes:Vec<u8> = Vec::new();
+            bytes.append(&mut buffer[0..nsize].to_vec());
+            loop {
+                match stream.try_read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        bytes.append(&mut buffer[0..n].to_vec());
+                    },
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(err) => {
+                        error!("Read failed: {:?}", err);
+                        break;
+                    }
+                };
+            }
+            debug!("Http request size: {:?}", bytes.len());
+            let text = std::str::from_utf8(bytes.as_slice()).unwrap().trim_matches('\u{0}').to_string();
+            info!("{}", text);
+            // 将请求转发给客户端
+            sender.write().await.send(Message { protocol: ProtocolType::HTTP, body: bytes}).unwrap();
+            // 获取所有的请求二进制
+        });
     }
     Ok(())
 }
@@ -69,12 +99,16 @@ pub async fn start_server(config: &ServerConfig) -> std::io::Result<()> {
     );
 
     let listener = TcpListener::bind(format!("{}:{:?}", config.host, config.port)).await?;
-    let nat_server: Arc<RwLock<NatServer>> = Arc::new(RwLock::new(NatServer::new()));
-
+    let (sender, receiver) = mpsc::unbounded_channel::<Message>();
+    let nat_server: Arc<RwLock<NatServer>> = Arc::new(RwLock::new(NatServer::new(receiver)));
+    let sender = Arc::new(RwLock::new(sender));
+    let ctx = Context {
+        inited: Arc::new(RwLock::new(false)),
+    };
     // accept connections and process them serially
     loop {
         let ns = nat_server.clone();
         let (socket, _) = listener.accept().await?;
-        let _ = handle_client(ns, socket).await;
+        let _ = handle_client(ctx.clone(), ns, sender.clone(), socket).await;
     }
 }

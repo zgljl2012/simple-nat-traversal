@@ -18,13 +18,13 @@ const PING: [u8; 1] = [0x0];
 const PONG: [u8; 1] = [0x1];
 
 #[derive(Debug, Clone)]
-struct Message {
+pub struct Message {
     pub protocol: ProtocolType,
     pub body: Vec<u8>
 }
 
 impl Message {
-    async fn from_stream(stream: &TcpStream) -> Result<Option<Message>, Box<dyn std::error::Error>> {
+    async fn from_stream(stream: &TcpStream) -> Result<Option<Message>, Box<dyn std::error::Error + Send + Sync>> {
         let mut buffer = Vec::with_capacity(4);
         match stream.try_read_buf(&mut buffer) {
             Ok(0) => {
@@ -62,6 +62,7 @@ pub struct NatServer {
     stream: Option<NatStream>,
     sender: Arc<RwLock<UnboundedSender<Message>>>,
     receiver: UnboundedReceiver<Message>,
+    extern_receiver: UnboundedReceiver<Message>,
 }
 
 // Write standard message to stream
@@ -75,9 +76,9 @@ async fn write(stream: &TcpStream, msg: &Message) {
 }
 
 impl NatServer {
-    pub fn new() -> NatServer {
+    pub fn new(extern_receiver: UnboundedReceiver<Message>) -> NatServer {
         let (sender, receiver) = mpsc::unbounded_channel::<Message>();
-        Self { stream: None, receiver: receiver, sender: Arc::new(RwLock::new(sender))}
+        Self { stream: None, receiver: receiver, sender: Arc::new(RwLock::new(sender)), extern_receiver}
     }
 
     pub fn init(&mut self, stream: NatStream) {
@@ -86,10 +87,6 @@ impl NatServer {
             return;
         }
         self.stream = Some(stream);
-    }
-
-    pub fn is_inited(&self) -> bool {
-        return self.stream.is_some();
     }
 
     async fn send_text(&mut self, msg: &str) -> std::io::Result<()> {
@@ -120,8 +117,9 @@ impl NatServer {
     pub async fn run_forever(&mut self) {
         // Wait for NAT server
         let stream = self.stream.as_ref().unwrap().write().await;
-        let sender = self.sender.write().await;
+        let sender = &mut self.sender;
         let receiver = &mut self.receiver;
+        let exteral_receiver = &mut self.extern_receiver;
         loop {
             // 读取server发过来的内容
             // 前四个字节表示消息的字节数，无符号 u32，即最多支持 2^32 次方的消息长度，即 4G
@@ -134,7 +132,7 @@ impl NatServer {
                                 info!("Received {:?}", msg.protocol);
                                 if msg.body.as_slice() == PING {
                                     info!("You received PING from NAT client");
-                                    sender.send(Message { protocol: ProtocolType::NAT, body: PONG.to_vec() }).unwrap();
+                                    sender.write().await.send(Message { protocol: ProtocolType::NAT, body: PONG.to_vec() }).unwrap();
                                 }
                             },
                             None => {}
@@ -144,6 +142,12 @@ impl NatServer {
                             break;
                         },
                     }
+                },
+                exteral_msg = exteral_receiver.recv() => match exteral_msg {
+                    Some(msg) => {
+                        sender.write().await.send(msg).unwrap();
+                    },
+                    None => todo!()
                 },
                 msg = receiver.recv() => match msg {
                     Some(msg) => {
