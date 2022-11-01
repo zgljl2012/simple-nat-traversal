@@ -81,6 +81,14 @@ impl ProtocolType {
             ProtocolType::NAT => NatProtocol::new(),
         }
     }
+
+    fn byte (&self) -> [u8; 1] {
+        match *self {
+            ProtocolType::NAT => [0x0],
+            ProtocolType::HTTP => [0x1],
+            ProtocolType::SSH => [0x2]
+        }
+    }
 }
 
 pub fn parse_protocol(line: String) -> Result<Box<dyn Protocol>, &'static str> {

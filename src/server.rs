@@ -31,6 +31,7 @@ async fn handle_client(nat_server: Arc<RwLock<NatServer>>, mut stream: TcpStream
     if protocol.name() == "NAT" {
         tokio::spawn(async move {
             if nat_server.read().await.is_inited() {
+                error!("Only support only one NAT client at a time");
                 stream.try_write("Reject".as_bytes()).unwrap();
                 // shutdown the connect with anther client
                 let _ = stream.shutdown().await;
@@ -47,6 +48,13 @@ async fn handle_client(nat_server: Arc<RwLock<NatServer>>, mut stream: TcpStream
             // 通信
             nat_server.write().await.run_forever().await;
         });
+    } else if protocol.name() == "HTTP" {
+        if !nat_server.read().await.is_inited() {
+            error!("There is no nat client connected");
+            return Ok(());
+        }
+        // 将请求转发给客户端
+        // 获取所有的请求二进制
     }
     Ok(())
 }

@@ -8,7 +8,7 @@ use std::{
 use log::{info, error, debug};
 use tokio::{sync::{RwLock, mpsc::{self, UnboundedSender, UnboundedReceiver}}, net::{TcpStream}, select, task, time};
 
-use crate::utils;
+use crate::{utils, protocols::ProtocolType};
 
 pub type NatStream = Arc<RwLock<TcpStream>>;
 
@@ -17,8 +17,42 @@ const PING: [u8; 1] = [0x0];
 // Pong message
 const PONG: [u8; 1] = [0x1];
 
+
+struct Message {
+    pub size: u32,
+    pub protocol: ProtocolType,
+    pub body: Vec<u8>
+}
+
+impl Message {
+    async fn from_stream(stream: &TcpStream) -> Result<Option<Message>, Box<dyn std::error::Error>> {
+        let mut buffer = Vec::with_capacity(4);
+        match stream.try_read_buf(&mut buffer) {
+            Ok(0) => {
+                Err("Server closed connection".into())
+            },
+            Ok(_) => {
+                let data_size = utils::as_u32_be(buffer.as_slice());
+                debug!("You received {:?} bytes from NAT client", data_size);
+                // Read other bytes
+                let mut data = Vec::with_capacity(data_size as usize);
+                stream.try_read_buf(&mut data).unwrap();
+                Ok(Some(Message { size: data_size, protocol: ProtocolType::NAT, body: data }))
+            },
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                Ok(None)
+            },
+            Err(e) => {
+                Err(format!("Unexpected error: {}", e).into())
+            }
+        }
+    }
+}
+
 pub struct NatServer {
     stream: Option<NatStream>,
+    sender: Arc<RwLock<UnboundedSender<Vec<u8>>>>,
+    receiver: UnboundedReceiver<Vec<u8>>,
 }
 
 // Write standard message to stream
@@ -32,7 +66,8 @@ async fn write(stream: &TcpStream, buf: &[u8]) {
 
 impl NatServer {
     pub fn new() -> NatServer {
-        Self { stream: None }
+        let (sender, receiver) = mpsc::unbounded_channel::<Vec<u8>>();
+        Self { stream: None, receiver: receiver, sender: Arc::new(RwLock::new(sender))}
     }
 
     pub fn init(&mut self, stream: NatStream) {
@@ -75,35 +110,36 @@ impl NatServer {
     pub async fn run_forever(&mut self) {
         // Wait for NAT server
         let stream = self.stream.as_ref().unwrap().write().await;
+        let sender = self.sender.write().await;
+        let receiver = &mut self.receiver;
         loop {
             // 读取server发过来的内容
             // 前四个字节表示消息的字节数，无符号 u32，即最多支持 2^32 次方的消息长度，即 4G
+            // 第五个字节表示协议类型：NAT(0x0), HTTP(0x1), SSH(0x2)
             select! {
                 _ = stream.readable() => {
-                    let mut buffer = Vec::with_capacity(4);
-                    match stream.try_read_buf(&mut buffer) {
-                        Ok(0) => {
-                            error!("Server closed connection");
+                    match Message::from_stream(&stream).await {
+                        Ok(msg) => match msg {
+                            Some(msg) => {
+                                if msg.body.as_slice() == PING {
+                                    info!("You received PING from NAT client");
+                                    // self.pong().await;
+                                    sender.send(PONG.to_vec()).unwrap();
+                                }
+                            },
+                            None => {}
+                        },
+                        Err(err) => {
+                            error!("{:?}", err);
                             break;
                         },
-                        Ok(_) => {
-                            let data_size = utils::as_u32_be(buffer.as_slice());
-                            debug!("You received {:?} bytes from NAT client", data_size);
-                            // Read other bytes
-                            let mut data = Vec::with_capacity(data_size as usize);
-                            stream.try_read_buf(&mut data).unwrap();
-                            if data.as_slice() == PING {
-                                info!("You received PING from NAT client");
-                                write(&stream, &PONG).await;
-                            }
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            continue;
-                        }
-                        Err(e) => {
-                            error!("Unexpected error: {}", e);
-                        }
-                    };
+                    }
+                },
+                msg = receiver.recv() => match msg {
+                    Some(buf) => {
+                        write(&stream, buf.as_slice()).await;
+                    },
+                    None => todo!(),
                 }
             }
         }
@@ -174,35 +210,27 @@ impl NatClient {
         loop {
             // 读取server发过来的内容
             // 前四个字节表示消息的字节数，无符号 u32，即最多支持 2^32 次方的消息长度，即 4G
+            // 第五个字节表示协议类型: NAT(0x0), HTTP(0x1), SSH(0x2)
             select! {
                 _ = stream.readable() => {
-                    let mut buffer = Vec::with_capacity(4);
-                    match stream.try_read_buf(&mut buffer) {
-                        Ok(0) => {
-                            error!("Server closed connection");
+                    match Message::from_stream(&stream).await {
+                        Ok(msg) => match msg {
+                            Some(msg) => {
+                                if msg.body.as_slice() == PONG {
+                                    info!("You received PONG from NAT server");
+                                }
+                            },
+                            None => {}
+                        },
+                        Err(err) => {
+                            error!("{:?}", err);
                             break;
                         },
-                        Ok(_) => {
-                            let data_size = utils::as_u32_be(buffer.as_slice());
-                            debug!("You received {:?} bytes from NAT server", data_size);
-                            // Read other bytes
-                            let mut data = Vec::with_capacity(data_size as usize);
-                            stream.try_read_buf(&mut data).unwrap();
-                            if data.as_slice() == PONG {
-                                info!("You received PONG from NAT server");
-                                write(&stream, &PONG).await;
-                            }
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            continue;
-                        }
-                        Err(e) => {
-                            error!("Unexpected error: {}", e);
-                        }
-                    };
-                },
+                    }
+                },  
                 msg = self.receiver.recv() => match msg {
                     Some(data) => {
+                        // Send PING
                         if data.as_slice() == PING {
                             write(&stream, data.as_slice()).await;
                         }
