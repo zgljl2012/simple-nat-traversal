@@ -83,7 +83,7 @@ async fn handle_client(ctx: Context, nat_server: Arc<RwLock<NatServer>>, sender:
             let text = std::str::from_utf8(bytes.as_slice()).unwrap().trim_matches('\u{0}').to_string();
             debug!("{}", text);
             // 将请求转发给客户端
-            sender.write().await.send(Message::new_http(bytes)).unwrap();
+            sender.write().await.send(Message::new_http(Some(0), bytes)).unwrap();
             // 获取所有的请求二进制
             let mut recv = receiver.write().await;
             select! {

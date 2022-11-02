@@ -1,6 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
-use log::info;
+use log::{debug, info};
+use reqwest::ClientBuilder;
+
+use crate::message::Message;
 
 #[derive(Debug, Clone)]
 pub struct RequestLine {
@@ -69,6 +72,57 @@ impl HttpRequest {
     }
 }
 
+pub async fn handle_http(msg: &Message) -> Result<String, Box<dyn std::error::Error>> {
+	// 取出 Host
+	let text = std::str::from_utf8(msg.body.as_slice())
+		.unwrap()
+		.trim_matches('\u{0}')
+		.to_string();
+	debug!("{}", text);
+	let req = HttpRequest::from_utf8(text.as_str());
+
+	info!("Redirect request to {:?}", req.request_line.url);
+
+	// Check the method
+	if !req.request_line.is_supported() {
+		return Err(format!("Don't support {:?} method now", req.request_line.method).into())
+	}
+
+	// Create client with timeout
+	let client = ClientBuilder::new().timeout(Duration::from_secs(2)).build()?;
+	// 转发给指定的 Host
+	let mut request = client.get(req.request_line.url.clone());
+	// Support post
+	if req.request_line.has_body() {
+		let s = req.data.unwrap_or("".to_string());
+		let data = s.as_str().clone();
+		request = client.post(req.request_line.url.clone())
+			.header("Content-Type", "application/json")
+			.body(format!("{:?}", data));
+	}
+	let body = request.send().await?;
+	
+	let mut res_text = String::new();
+	res_text += &format!("{:?} {:?}\r\n", body.version(), body.status().as_u16());
+	let specify = "FROM CPChain----\r\n";
+	for (key, value) in body.headers() {
+		let mut v = value.to_str().unwrap().to_string();
+		if key.to_string() == "content-length" {
+			let mut size = v.parse::<usize>().unwrap();
+			size += specify.len();
+			v = format!("{:?}", size)
+		}
+		res_text += &format!(
+			"{}: {}\r\n",
+			key.to_string(),
+			v
+		)
+	}
+	let text = body.text().await?;
+	res_text += &format!("\r\n{}{} \r\n", specify, text);
+	debug!("{}", res_text);
+	Ok(res_text)
+}
 
 #[cfg(test)]
 mod tests {

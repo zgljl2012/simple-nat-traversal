@@ -1,3 +1,5 @@
+use std::vec;
+
 use log::debug;
 use tokio::net::TcpStream;
 
@@ -8,28 +10,32 @@ use crate::{protocols::ProtocolType, utils};
 pub struct Message {
     pub protocol: ProtocolType,
     pub body: Vec<u8>,
+	pub tracing_id: Option<u32>,
 }
 
 const PING_BYTES: [u8; 1] = [0x0];
 const PONG_BYTES: [u8; 1] = [0x1];
 
 impl Message {
-    pub fn new_http(body: Vec<u8>) -> Self {
+    pub fn new_http(tracing_id: Option<u32>, body: Vec<u8>) -> Self {
         Self {
             protocol: ProtocolType::HTTP,
-            body
+            body,
+			tracing_id: tracing_id,
         }
     }
-    pub fn http_502() -> Self {
+    pub fn http_502(tracing_id: Option<u32>) -> Self {
         Self {
             protocol: ProtocolType::HTTP,
             body: "HTTP/1.1 502 Bad Gateway\r\n".as_bytes().to_vec(),
+			tracing_id: tracing_id,
         }
     }
-    pub fn http_504() -> Self {
+    pub fn http_504(tracing_id: Option<u32>) -> Self {
         Self {
             protocol: ProtocolType::HTTP,
             body: "HTTP/1.1 504 Bad Timeout\r\n".as_bytes().to_vec(),
+			tracing_id: tracing_id,
         }
     }
 
@@ -59,6 +65,13 @@ impl Message {
                         .into());
                     }
                 };
+				// read tracing_id
+				let mut tracing_id: Option<u32> = None;
+				if protocol_type != ProtocolType::NAT {
+					let mut tracing_id_buf = Vec::with_capacity(4);
+					stream.try_read_buf(&mut tracing_id_buf).unwrap();
+					tracing_id = Some(utils::as_u32_be(tracing_id_buf.as_slice()));
+				}
 
                 // Read other bytes
                 let mut data = Vec::with_capacity(data_size as usize);
@@ -66,6 +79,7 @@ impl Message {
                 Ok(Some(Message {
                     protocol: protocol_type,
                     body: data,
+					tracing_id: tracing_id,
                 }))
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
@@ -77,9 +91,15 @@ impl Message {
     pub async fn write_to(&self, stream: &TcpStream) {
         let size: u32 = self.body.len() as u32;
         let size_arr = utils::u32_to_be(size);
+		// tracing_id
+		let tracing_id: Vec<u8> = match self.tracing_id {
+			Some(id) => utils::u32_to_be(id).to_vec(),
+			None => vec![]
+		};
         let r: Vec<u8> = [
             &size_arr,
             self.protocol.bytes().to_vec().as_slice(),
+			tracing_id.as_slice(),
             self.body.as_slice(),
         ]
         .concat();
@@ -100,10 +120,10 @@ impl Message {
     }
 
     pub fn ping() -> Self {
-        Self{protocol: ProtocolType::NAT, body: PING_BYTES.to_vec()}
+        Self{protocol: ProtocolType::NAT, body: PING_BYTES.to_vec(), tracing_id: None,}
     }
 
     pub fn pong() -> Self {
-        Self{protocol: ProtocolType::NAT, body: PONG_BYTES.to_vec()}
+        Self{protocol: ProtocolType::NAT, body: PONG_BYTES.to_vec(), tracing_id: None}
     }
 }

@@ -4,7 +4,6 @@ use core::panic;
 use std::{sync::Arc, time::Duration};
 
 use log::{debug, error, info};
-use reqwest::ClientBuilder;
 use tokio::{
     net::TcpStream,
     select,
@@ -15,7 +14,7 @@ use tokio::{
     task, time,
 };
 
-use crate::{http::HttpRequest, message::{Message}};
+use crate::{http::{handle_http}, message::{Message}};
 
 pub type NatStream = Arc<RwLock<TcpStream>>;
 
@@ -182,58 +181,6 @@ impl NatClient {
         Ok(())
     }
 
-    async fn handle_http(&self, msg: &Message) -> Result<String, Box<dyn std::error::Error>> {
-        // 取出 Host
-        let text = std::str::from_utf8(msg.body.as_slice())
-            .unwrap()
-            .trim_matches('\u{0}')
-            .to_string();
-        debug!("{}", text);
-        let req = HttpRequest::from_utf8(text.as_str());
-
-        info!("Redirect request to {:?}", req.request_line.url);
-
-		// Check the method
-		if !req.request_line.is_supported() {
-			return Err(format!("Don't support {:?} method now", req.request_line.method).into())
-		}
-
-        // Create client with timeout
-        let client = ClientBuilder::new().timeout(Duration::from_secs(2)).build()?;
-        // 转发给指定的 Host
-		let mut request = client.get(req.request_line.url.clone());
-		// Support post
-		if req.request_line.has_body() {
-			let s = req.data.unwrap_or("".to_string());
-			let data = s.as_str().clone();
-			request = client.post(req.request_line.url.clone())
-				.header("Content-Type", "application/json")
-				.body(format!("{:?}", data));
-		}
-        let body = request.send().await?;
-        
-        let mut res_text = String::new();
-        res_text += &format!("{:?} {:?}\r\n", body.version(), body.status().as_u16());
-        let specify = "FROM CPChain----\r\n";
-        for (key, value) in body.headers() {
-            let mut v = value.to_str().unwrap().to_string();
-            if key.to_string() == "content-length" {
-                let mut size = v.parse::<usize>().unwrap();
-                size += specify.len();
-                v = format!("{:?}", size)
-            }
-            res_text += &format!(
-                "{}: {}\r\n",
-                key.to_string(),
-                v
-            )
-        }
-        let text = body.text().await?;
-        res_text += &format!("\r\n{}{} \r\n", specify, text);
-        debug!("{}", res_text);
-        Ok(res_text)
-    }
-
     pub async fn run_forever(&mut self) {
         // Wait for NAT server
         let stream = self.stream.write().await;
@@ -251,21 +198,21 @@ impl NatClient {
                                     debug!("You received PONG from NAT server");
                                 }
                                 if msg.is_http() {
-                                    match self.handle_http(&msg).await {
+                                    match handle_http(&msg).await {
                                         Ok(res) => {
                                             // Send to server
-                                            Message::new_http(res.as_bytes().to_vec()).write_to(&stream).await;
+                                            Message::new_http(msg.tracing_id, res.as_bytes().to_vec()).write_to(&stream).await;
                                         },
                                         Err(e) => {
                                             error!("Redirect http request failed: {:?}", e);
                                             if e.source().is_some() {
                                                 if "operation timed out" == format!("{}", e.source().unwrap()) {
-                                                    Message::http_504().write_to(&stream).await;
+                                                    Message::http_504(msg.tracing_id).write_to(&stream).await;
                                                 } else {
-                                                    Message::http_502().write_to(&stream).await;
+                                                    Message::http_502(msg.tracing_id).write_to(&stream).await;
                                                 }
                                             } else {
-                                                Message::http_502().write_to(&stream).await;
+                                                Message::http_502(msg.tracing_id).write_to(&stream).await;
                                             }
                                         }
                                     }
