@@ -4,6 +4,7 @@ use core::panic;
 use std::{sync::Arc, time::Duration};
 
 use log::{debug, error, info};
+use reqwest::ClientBuilder;
 use tokio::{
     net::TcpStream,
     select,
@@ -30,6 +31,24 @@ pub struct Message {
 }
 
 impl Message {
+    fn new_http(body: Vec<u8>) -> Self {
+        Self {
+            protocol: ProtocolType::HTTP,
+            body
+        }
+    }
+    fn http_502() -> Self {
+        Self {
+            protocol: ProtocolType::HTTP,
+            body: "HTTP/1.1 502 Bad Gateway\r\n".as_bytes().to_vec(),
+        }
+    }
+    fn http_504() -> Self {
+        Self {
+            protocol: ProtocolType::HTTP,
+            body: "HTTP/1.1 504 Bad Timeout\r\n".as_bytes().to_vec(),
+        }
+    }
     async fn from_stream(
         stream: &TcpStream,
     ) -> Result<Option<Message>, Box<dyn std::error::Error + Send + Sync>> {
@@ -64,6 +83,10 @@ impl Message {
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
             Err(e) => Err(format!("Unexpected error: {}", e).into()),
         }
+    }
+
+    pub fn is_http(&self) -> bool {
+        self.protocol == ProtocolType::HTTP
     }
 }
 
@@ -153,7 +176,7 @@ impl NatServer {
                                     debug!("You received PING from NAT client");
                                     sender.write().await.send(Message { protocol: ProtocolType::NAT, body: PONG.to_vec() }).unwrap();
                                 }
-                                if msg.protocol == ProtocolType::HTTP {
+                                if msg.is_http() {
                                     info!("Received HTTP Response from client");
                                     exteral_sender.write().await.send(msg).unwrap();
                                 }
@@ -253,12 +276,16 @@ impl NatClient {
             .unwrap()
             .trim_matches('\u{0}')
             .to_string();
+        debug!("{}", text);
         let req = HttpRequest::from_utf8(text.as_str());
 
         info!("Redirect request to {:?}", req.request_line.url);
 
+        // Create client with timeout
+        let client = ClientBuilder::new().timeout(Duration::from_secs(2)).build()?;
         // 转发给指定的 Host
-        let body = reqwest::get(req.request_line.url).await?;
+        let body = client.get(req.request_line.url).send().await?;
+        
         let mut res_text = String::new();
         res_text += &format!("{:?} {:?}\r\n", body.version(), body.status().as_u16());
         let specify = "FROM CPChain----\r\n";
@@ -297,14 +324,23 @@ impl NatClient {
                                 if msg.body.as_slice() == PONG {
                                     debug!("You received PONG from NAT server");
                                 }
-                                if msg.protocol == ProtocolType::HTTP {
+                                if msg.is_http() {
                                     match self.handle_http(&msg).await {
                                         Ok(res) => {
                                             // Send to server
-                                            write(&stream, &Message{protocol: ProtocolType::HTTP, body: res.as_bytes().to_vec()}).await;
+                                            write(&stream, &Message::new_http(res.as_bytes().to_vec())).await;
                                         },
                                         Err(e) => {
                                             error!("Redirect http request failed: {:?}", e);
+                                            if e.source().is_some() {
+                                                if "operation timed out" == format!("{}", e.source().unwrap()) {
+                                                    write(&stream, &Message::http_504()).await;
+                                                } else {
+                                                    write(&stream, &Message::http_502()).await;
+                                                }
+                                            } else {
+                                                write(&stream, &Message::http_502()).await;
+                                            }
                                         }
                                     }
                                 }

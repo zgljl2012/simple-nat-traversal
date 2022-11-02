@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use actix_web::cookie::time::error;
 use log::{info, error, debug};
 use tokio::{net::{TcpListener, TcpStream}, sync::{RwLock, mpsc::{self, UnboundedSender, UnboundedReceiver}}, io::{AsyncReadExt, AsyncWriteExt}, select};
 
@@ -91,8 +90,9 @@ async fn handle_client(ctx: Context, nat_server: Arc<RwLock<NatServer>>, sender:
                 msg = recv.recv() => match msg {
                     Some(msg) => {
                         match stream.write(&msg.body).await {
-                            Ok(_) => {
-                                info!("Http response successfully");
+                            Ok(n) => {
+                                let s = std::str::from_utf8(&msg.body).unwrap();
+                                debug!("Http response successfully: {:?} bytes, body {:?}", n, s);
                             },
                             Err(e) => {
                                 error!("Write error: {}", e);
@@ -100,11 +100,18 @@ async fn handle_client(ctx: Context, nat_server: Arc<RwLock<NatServer>>, sender:
                         }
                     },
                     None => {
-                        error!("Receive empty message")
+                        error!("Receive empty message");
+                        match stream.write(b"HTTP/1.1 500 Internal Server Error\r\n").await {
+                            Ok(_) => {},
+                            Err(e) => {
+                                error!("Write error: {}", e);
+                            }
+                        }
                     },
                 }
             }
-            
+            stream.shutdown().await.unwrap();
+            info!("Http stream shutdown completed");
         });
     }
     Ok(())
