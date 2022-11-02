@@ -3,10 +3,8 @@
 use std::sync::Arc;
 
 use log::{info, error, debug};
+use nat::{parse_protocol, NatServer, Message};
 use tokio::{net::{TcpListener, TcpStream}, sync::{RwLock, mpsc::{self, UnboundedSender, UnboundedReceiver}}, io::{AsyncReadExt, AsyncWriteExt}, select};
-
-use crate::{protocols::{parse_protocol}, nat::{NatServer}, message::Message};
-
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,

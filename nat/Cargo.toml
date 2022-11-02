@@ -1,5 +1,5 @@
 [package]
-name = "cpc-nat-traversal"
+name = "nat"
 version = "0.1.0"
 edition = "2021"
 
@@ -13,5 +13,4 @@ futures = "0.3.25"
 tokio = {version="1.21.2", features=["full"]}
 tokio-stream = "0.1.11"
 futures-util = "0.3.25"
-clap = "4.0.18"
-nat = {version="0.1.0", path="./nat"}
+

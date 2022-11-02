@@ -1,5 +1,5 @@
 //! Simple websocket client.
-use crate::nat::NatClient;
+use nat::NatClient;
 
 pub struct ClientConfig {
     pub server_url: String,
