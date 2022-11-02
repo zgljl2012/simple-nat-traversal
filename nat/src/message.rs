@@ -1,6 +1,6 @@
 use std::vec;
 
-use log::debug;
+use log::{debug, error};
 use tokio::net::TcpStream;
 
 use crate::{protocols::ProtocolType, utils};
@@ -104,7 +104,15 @@ impl Message {
         ]
         .concat();
         stream.writable().await.unwrap();
-        stream.try_write(&r.as_slice()).unwrap();
+        match stream.try_write(&r.as_slice()) {
+			Ok(_) => {
+				debug!("write message successfully");
+			}
+			Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+			Err(e) => {
+				error!("Write {:?} message#{:?} failed: {:?}", self.protocol, self.tracing_id, e);
+			}
+		}
     }
 
     pub fn is_http(&self) -> bool {
@@ -126,4 +134,15 @@ impl Message {
     pub fn pong() -> Self {
         Self{protocol: ProtocolType::NAT, body: PONG_BYTES.to_vec(), tracing_id: None}
     }
+
+	pub fn to_utf8(&self) -> &str {
+		match std::str::from_utf8(&self.body) {
+			Ok(s) => s,
+			Err(e) => {
+				error!("Convert body to utf8 failed: {:?}", e);
+				""
+			}
+		}
+	}
+
 }
