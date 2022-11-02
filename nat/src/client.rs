@@ -5,7 +5,6 @@ use tokio::{sync::{RwLock, mpsc::{UnboundedSender, UnboundedReceiver, self}}, ne
 
 use crate::{NatStream, Message, http::handle_http};
 
-
 // Client protocol
 pub struct NatClient {
     stream: NatStream,

@@ -3,7 +3,7 @@ use std::{sync::Arc, collections::HashMap};
 use log::{debug, info, error};
 use tokio::{sync::{RwLock, mpsc::{UnboundedSender, UnboundedReceiver, self}}, select, net::{TcpStream, TcpListener}, io::{AsyncReadExt, AsyncWriteExt}};
 
-use crate::{NatStream, Message, parse_protocol};
+use crate::{Message, parse_protocol};
 
 #[derive(Debug)]
 struct Connection {
@@ -37,12 +37,7 @@ fn get_packets(conn: &Connection) -> Vec<u8> {
 }
 
 pub struct NatServer {
-    stream: Option<NatStream>,
-    sender: Arc<RwLock<UnboundedSender<Message>>>,
-    receiver: UnboundedReceiver<Message>,
-    exteral_sender: Arc<RwLock<UnboundedSender<Message>>>,
-    exteral_receiver: UnboundedReceiver<Message>,
-	// Nat client channel
+    // Nat client channel
 	nat_client_tx: UnboundedSender<TcpStream>,
 	nat_client_rx: UnboundedReceiver<TcpStream>,
 	// Connected client count
@@ -55,12 +50,8 @@ pub struct NatServer {
 }
 
 impl NatServer {
-    pub fn new(
-        exteral_sender: Arc<RwLock<UnboundedSender<Message>>>,
-        exteral_receiver: UnboundedReceiver<Message>,
-    ) -> NatServer {
-        let (sender, receiver) = mpsc::unbounded_channel::<Message>();
-		let (nat_client_tx, nat_client_rx) = mpsc::unbounded_channel::<TcpStream>();
+    pub fn new() -> NatServer {
+        let (nat_client_tx, nat_client_rx) = mpsc::unbounded_channel::<TcpStream>();
 		let (http_conn_tx, http_conn_rx) = mpsc::unbounded_channel::<Connection>();
         Self {
 			nat_client_rx,
@@ -68,20 +59,11 @@ impl NatServer {
 			nat_client_cnt: 0,
 			http_conn_rx,
 			http_conn_tx,
-            stream: None,
-            receiver: receiver,
-            sender: Arc::new(RwLock::new(sender)),
-            exteral_receiver,
-            exteral_sender,
 			tracing_seq: 0,
         }
     }
 
-    pub fn init(&mut self, stream: NatStream) {
-        self.stream = Some(stream);
-    }
-
-	async fn handle_client(&self, mut stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+    async fn handle_client(&self, mut stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
 		// Parse the first line
 		const BATCH_SIZE: usize = 64;
 		let mut buffer = [0;BATCH_SIZE];
@@ -111,38 +93,6 @@ impl NatServer {
 				init_buf: buffer[0..usize].to_vec(),
 				stream: stream
 			})?;
-			// tokio::spawn(async move {
-			// 	// 将请求转发给客户端
-			// 	sender.write().await.send(Message::new_http(Some(0), bytes)).unwrap();
-			// 	// 获取所有的请求二进制
-			// 	let mut recv = receiver.write().await;
-			// 	select! {
-			// 		msg = recv.recv() => match msg {
-			// 			Some(msg) => {
-			// 				match stream.write(&msg.body).await {
-			// 					Ok(n) => {
-			// 						let s = std::str::from_utf8(&msg.body).unwrap();
-			// 						debug!("Http response successfully: {:?} bytes, body {:?}", n, s);
-			// 					},
-			// 					Err(e) => {
-			// 						error!("Write error: {}", e);
-			// 					}
-			// 				}
-			// 			},
-			// 			None => {
-			// 				error!("Receive empty message");
-			// 				match stream.write(b"HTTP/1.1 500 Internal Server Error\r\n").await {
-			// 					Ok(_) => {},
-			// 					Err(e) => {
-			// 						error!("Write error: {}", e);
-			// 					}
-			// 				}
-			// 			},
-			// 		}
-			// 	}
-			// 	stream.shutdown().await.unwrap();
-			// 	info!("Http stream shutdown completed");
-			// });
 		}
 		Ok(())
 	}
@@ -150,13 +100,6 @@ impl NatServer {
     pub async fn run_forever(&mut self, url: &str) -> Result<(), Box<dyn std::error::Error>> {
 		// Create TCP server
 		let listener = TcpListener::bind(url).await?;
-        // Wait for NAT server
-        // let stream = self.stream.as_ref().unwrap().write().await;
-        let sender = &self.sender;
-        let receiver = &self.receiver;
-        let exteral_receiver = &self.exteral_receiver;
-        let exteral_sender = &self.exteral_sender;
-
 		// Send to NAT client message channel
 		let (ncm_tx, ncm_rx) = mpsc::unbounded_channel::<Message>();
 		let ncm_rx = Arc::new(RwLock::new(ncm_rx));
@@ -290,18 +233,6 @@ impl NatServer {
 					},
 					None => {}
 				}
-                // exteral_msg = exteral_receiver.recv() => match exteral_msg {
-                //     Some(msg) => {
-                //         sender.write().await.send(msg).unwrap();
-                //     },
-                //     None => todo!()
-                // },
-                // msg = receiver.recv() => match msg {
-                //     Some(msg) => {
-                //         msg.write_to(&stream).await;
-                //     },
-                //     None => todo!(),
-                // }
             }
         }
     }

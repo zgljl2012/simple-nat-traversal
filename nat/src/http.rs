@@ -5,6 +5,8 @@ use reqwest::ClientBuilder;
 
 use crate::message::Message;
 
+const GATEWAY_TIMEOUT: u64 = 20;
+
 #[derive(Debug, Clone)]
 pub struct RequestLine {
     pub method: String,
@@ -89,7 +91,7 @@ pub async fn handle_http(msg: &Message) -> Result<String, Box<dyn std::error::Er
 	}
 
 	// Create client with timeout
-	let client = ClientBuilder::new().timeout(Duration::from_secs(2)).build()?;
+	let client = ClientBuilder::new().timeout(Duration::from_secs(GATEWAY_TIMEOUT)).build()?;
 	// 转发给指定的 Host
 	let mut request = client.get(req.request_line.url.clone());
 	// Support post
