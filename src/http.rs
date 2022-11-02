@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use log::info;
+
 #[derive(Debug, Clone)]
 pub struct RequestLine {
     pub method: String,
@@ -16,6 +18,12 @@ impl RequestLine {
             http_version: r.next().unwrap().to_string(),
         }
     }
+	pub fn has_body(&self) -> bool {
+		["POST", "PUT", "PATCH"].contains(&self.method.to_uppercase().as_str())
+	}
+	pub fn is_supported(&self) -> bool {
+		["GET", "POST"].contains(&self.method.to_uppercase().as_str())
+	}
 }
 
 #[derive(Debug, Clone)]
@@ -24,7 +32,8 @@ pub struct HttpRequest {
     pub host: String,
     pub user_agent: String,
     pub accept: String,
-    pub proxy_connection: String
+    pub proxy_connection: String,
+	pub data: Option<String>,
 }
 
 impl HttpRequest {
@@ -41,12 +50,21 @@ impl HttpRequest {
             }
             headers.insert(name.unwrap(), value.unwrap().clone().to_string());
         }
+		let mut data: Option<String> = None;
+		if first_line.has_body() {
+			let mut buf = String::new();
+			while let Some(line) = it.next() {
+				buf += line;
+			}
+			data = Some(buf);
+		}
         Self {
             request_line: first_line,
             host: headers.get("Host").unwrap_or(&"".to_string()).clone(),
             user_agent: headers.get("User-Agent").unwrap_or(&"".to_string()).clone(),
             accept: headers.get("Accept").unwrap_or(&"".to_string()).clone(),
             proxy_connection: headers.get("Proxy-Connection").unwrap_or(&"".to_string()).clone(),
+			data,
         }
     }
 }

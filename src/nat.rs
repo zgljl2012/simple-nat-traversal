@@ -193,10 +193,24 @@ impl NatClient {
 
         info!("Redirect request to {:?}", req.request_line.url);
 
+		// Check the method
+		if !req.request_line.is_supported() {
+			return Err(format!("Don't support {:?} method now", req.request_line.method).into())
+		}
+
         // Create client with timeout
         let client = ClientBuilder::new().timeout(Duration::from_secs(2)).build()?;
         // 转发给指定的 Host
-        let body = client.get(req.request_line.url).send().await?;
+		let mut request = client.get(req.request_line.url.clone());
+		// Support post
+		if req.request_line.has_body() {
+			let s = req.data.unwrap_or("".to_string());
+			let data = s.as_str().clone();
+			request = client.post(req.request_line.url.clone())
+				.header("Content-Type", "application/json")
+				.body(format!("{:?}", data));
+		}
+        let body = request.send().await?;
         
         let mut res_text = String::new();
         res_text += &format!("{:?} {:?}\r\n", body.version(), body.status().as_u16());
