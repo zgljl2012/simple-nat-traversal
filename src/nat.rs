@@ -15,80 +15,9 @@ use tokio::{
     task, time,
 };
 
-use crate::{http::HttpRequest, protocols::ProtocolType, utils};
+use crate::{http::HttpRequest, message::{Message}};
 
 pub type NatStream = Arc<RwLock<TcpStream>>;
-
-// Ping message
-const PING: [u8; 1] = [0x0];
-// Pong message
-const PONG: [u8; 1] = [0x1];
-
-#[derive(Debug, Clone)]
-pub struct Message {
-    pub protocol: ProtocolType,
-    pub body: Vec<u8>,
-}
-
-impl Message {
-    fn new_http(body: Vec<u8>) -> Self {
-        Self {
-            protocol: ProtocolType::HTTP,
-            body
-        }
-    }
-    fn http_502() -> Self {
-        Self {
-            protocol: ProtocolType::HTTP,
-            body: "HTTP/1.1 502 Bad Gateway\r\n".as_bytes().to_vec(),
-        }
-    }
-    fn http_504() -> Self {
-        Self {
-            protocol: ProtocolType::HTTP,
-            body: "HTTP/1.1 504 Bad Timeout\r\n".as_bytes().to_vec(),
-        }
-    }
-    async fn from_stream(
-        stream: &TcpStream,
-    ) -> Result<Option<Message>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut buffer = Vec::with_capacity(4);
-        match stream.try_read_buf(&mut buffer) {
-            Ok(0) => Err("Connection closed".into()),
-            Ok(_) => {
-                let data_size = utils::as_u32_be(buffer.as_slice());
-                debug!("You received {:?} bytes from NAT client", data_size);
-                // read protocol type
-                let mut protocol_type_buf = Vec::with_capacity(1);
-                stream.try_read_buf(&mut protocol_type_buf).unwrap();
-                let protocol_type = match ProtocolType::from_slice(protocol_type_buf.as_slice()) {
-                    Some(pt) => pt,
-                    None => {
-                        return Err(format!(
-                            "Uncognizaed protocol type: {:?}",
-                            utils::as_u32_be(protocol_type_buf.as_slice())
-                        )
-                        .into());
-                    }
-                };
-
-                // Read other bytes
-                let mut data = Vec::with_capacity(data_size as usize);
-                stream.try_read_buf(&mut data).unwrap();
-                Ok(Some(Message {
-                    protocol: protocol_type,
-                    body: data,
-                }))
-            }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-            Err(e) => Err(format!("Unexpected error: {}", e).into()),
-        }
-    }
-
-    pub fn is_http(&self) -> bool {
-        self.protocol == ProtocolType::HTTP
-    }
-}
 
 pub struct NatServer {
     stream: Option<NatStream>,
@@ -96,20 +25,6 @@ pub struct NatServer {
     receiver: UnboundedReceiver<Message>,
     exteral_sender: Arc<RwLock<UnboundedSender<Message>>>,
     exteral_receiver: UnboundedReceiver<Message>,
-}
-
-// Write standard message to stream
-async fn write(stream: &TcpStream, msg: &Message) {
-    let size: u32 = msg.body.len() as u32;
-    let size_arr = utils::u32_to_be(size);
-    let r: Vec<u8> = [
-        &size_arr,
-        msg.protocol.bytes().to_vec().as_slice(),
-        msg.body.as_slice(),
-    ]
-    .concat();
-    stream.writable().await.unwrap();
-    stream.try_write(&r.as_slice()).unwrap();
 }
 
 impl NatServer {
@@ -172,9 +87,9 @@ impl NatServer {
                         Ok(msg) => match msg {
                             Some(msg) => {
                                 debug!("Received {:?}", msg.protocol);
-                                if msg.body.as_slice() == PING {
+                                if msg.is_ping() {
                                     debug!("You received PING from NAT client");
-                                    sender.write().await.send(Message { protocol: ProtocolType::NAT, body: PONG.to_vec() }).unwrap();
+                                    sender.write().await.send(Message::pong()).unwrap();
                                 }
                                 if msg.is_http() {
                                     info!("Received HTTP Response from client");
@@ -197,7 +112,7 @@ impl NatServer {
                 },
                 msg = receiver.recv() => match msg {
                     Some(msg) => {
-                        write(&stream, &msg).await;
+                        msg.write_to(&stream).await;
                     },
                     None => todo!(),
                 }
@@ -259,10 +174,7 @@ impl NatClient {
                 sender
                     .write()
                     .await
-                    .send(Message {
-                        protocol: ProtocolType::NAT,
-                        body: PING.to_vec(),
-                    })
+                    .send(Message::ping())
                     .unwrap();
                 interval.tick().await;
             }
@@ -321,25 +233,25 @@ impl NatClient {
                         Ok(msg) => match msg {
                             Some(msg) => {
                                 debug!("Received {:?}", msg.protocol);
-                                if msg.body.as_slice() == PONG {
+                                if msg.is_pong() {
                                     debug!("You received PONG from NAT server");
                                 }
                                 if msg.is_http() {
                                     match self.handle_http(&msg).await {
                                         Ok(res) => {
                                             // Send to server
-                                            write(&stream, &Message::new_http(res.as_bytes().to_vec())).await;
+                                            Message::new_http(res.as_bytes().to_vec()).write_to(&stream).await;
                                         },
                                         Err(e) => {
                                             error!("Redirect http request failed: {:?}", e);
                                             if e.source().is_some() {
                                                 if "operation timed out" == format!("{}", e.source().unwrap()) {
-                                                    write(&stream, &Message::http_504()).await;
+                                                    Message::http_504().write_to(&stream).await;
                                                 } else {
-                                                    write(&stream, &Message::http_502()).await;
+                                                    Message::http_502().write_to(&stream).await;
                                                 }
                                             } else {
-                                                write(&stream, &Message::http_502()).await;
+                                                Message::http_502().write_to(&stream).await;
                                             }
                                         }
                                     }
@@ -356,7 +268,7 @@ impl NatClient {
                 msg = self.receiver.recv() => match msg {
                     Some(msg) => {
                         // Send to server
-                        write(&stream, &msg).await;
+                        msg.write_to(&stream).await;
                     },
                     None => {},
                 }

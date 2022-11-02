@@ -5,7 +5,7 @@ use std::sync::Arc;
 use log::{info, error, debug};
 use tokio::{net::{TcpListener, TcpStream}, sync::{RwLock, mpsc::{self, UnboundedSender, UnboundedReceiver}}, io::{AsyncReadExt, AsyncWriteExt}, select};
 
-use crate::{protocols::{parse_protocol, ProtocolType}, nat::{NatServer, Message}};
+use crate::{protocols::{parse_protocol}, nat::{NatServer}, message::Message};
 
 pub struct ServerConfig {
     pub host: String,
@@ -81,9 +81,9 @@ async fn handle_client(ctx: Context, nat_server: Arc<RwLock<NatServer>>, sender:
             }
             debug!("Http request size: {:?}", bytes.len());
             let text = std::str::from_utf8(bytes.as_slice()).unwrap().trim_matches('\u{0}').to_string();
-            info!("{}", text);
+            debug!("{}", text);
             // 将请求转发给客户端
-            sender.write().await.send(Message { protocol: ProtocolType::HTTP, body: bytes}).unwrap();
+            sender.write().await.send(Message::new_http(bytes)).unwrap();
             // 获取所有的请求二进制
             let mut recv = receiver.write().await;
             select! {
