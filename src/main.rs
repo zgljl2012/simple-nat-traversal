@@ -32,7 +32,7 @@ fn cli() -> Command {
 }
 
 #[tokio::main]
-async fn main() -> std::io::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let matches = cli().get_matches();
     match matches.subcommand() {
         Some(("server", sub_matches)) => {
