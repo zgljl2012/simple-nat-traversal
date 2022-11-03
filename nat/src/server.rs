@@ -1,6 +1,6 @@
 use std::{sync::Arc, collections::HashMap};
 
-use log::{debug, info, error};
+use log::{debug, info, error, warn};
 use tokio::{sync::{RwLock, mpsc::{UnboundedSender, UnboundedReceiver, self}}, select, net::{TcpStream, TcpListener}, io::{AsyncReadExt, AsyncWriteExt}};
 
 use crate::{Message, parse_protocol};
@@ -86,7 +86,7 @@ impl NatServer {
 		} else if protocol.name() == "HTTP" {
 			if self.nat_client_cnt == 0 {
 				// 如果当前没有 nat_client 连接，则返回 502 错误
-				Message::http_502(None).write_to(&stream).await;
+				let _  = Message::http_502(None).write_to(&stream).await;
 				let _ = &stream.shutdown().await?;
 			}
 			self.http_conn_tx.send(Connection {
@@ -108,6 +108,9 @@ impl NatServer {
 		let client_reply_tx = Arc::new(RwLock::new(client_reply_tx));
 		// Http connections
 		let mut connections: HashMap<u32, TcpStream> = HashMap::new();
+		// Failed to connect to the client 
+		let (cc_failed_tx, mut cc_failed_rx) = mpsc::unbounded_channel::<bool>();
+		let cc_failed_tx = Arc::new(RwLock::new(cc_failed_tx));
         loop {
             select! {
 				socket = listener.accept() => match socket {
@@ -142,13 +145,25 @@ impl NatServer {
 						// 此时，已连接 nat client，则开始在异步中循环处理此异步
 						let ncm_rx = ncm_rx.clone();
 						let client_reply_tx = client_reply_tx.clone();
+						let cc_failed_tx = cc_failed_tx.clone();
 						tokio::spawn(async move {
 							let mut ncm_rx = ncm_rx.write().await;
+							let cc_failed_tx = cc_failed_tx.write().await;
 							loop {
 								select! {
 									msg = ncm_rx.recv() => match msg {
 										Some(msg) => {
-											msg.write_to(&stream).await;
+											match msg.write_to(&stream).await {
+												Ok(_) => {
+													debug!("Send reply to client successfully");
+												}
+												Err(e) => {
+													// Send to client error
+													error!("Send request to client failed: {}", e);
+													cc_failed_tx.send(true).unwrap();
+													break;
+												}
+											}
 										},
 										None => {}
 									},
@@ -160,7 +175,14 @@ impl NatServer {
 													if msg.is_ping() {
 														// 如果收到 Ping，就直接 Pong
 														info!("You received PING from NAT client");
-														Message::pong().write_to(&stream).await;
+														match Message::pong().write_to(&stream).await {
+															Ok(_) => {},
+															Err(e) => {
+																error!("Can't send PONG to client failed: {}", e);
+																cc_failed_tx.send(true).unwrap();
+																break;
+															}
+														};
 													}
 													if msg.is_http() {
 														info!("Received HTTP Response from client");
@@ -170,7 +192,8 @@ impl NatServer {
 												None => {}
 											},
 											Err(err) => {
-												error!("{:?}", err);
+												error!("{}", err);
+												cc_failed_tx.send(true).unwrap();
 												break;
 											},
 										}
@@ -186,8 +209,7 @@ impl NatServer {
 				http_conn = self.http_conn_rx.recv() => match http_conn {
 					Some(mut conn) if self.nat_client_cnt == 0 => {
 						// 如果当前没有 nat_client 连接，则返回 502 错误
-						info!("Not exists nat client, shutdown this connections");
-						Message::http_502(None).write_to(&conn.stream).await;
+						warn!("Not exists nat client, shutdown this connections");
 						let _ = &conn.stream.shutdown().await;
 					},
 					Some(conn) => {
@@ -232,6 +254,10 @@ impl NatServer {
 						}
 					},
 					None => {}
+				},
+				_ = cc_failed_rx.recv() => {
+					// Client disconnected
+					self.nat_client_cnt -= 1;
 				}
             }
         }

@@ -88,7 +88,7 @@ impl Message {
     }
 
     // Write standard message to stream
-    pub async fn write_to(&self, stream: &TcpStream) {
+    pub async fn write_to(&self, stream: &TcpStream) -> Result<(), Box<dyn std::error::Error>> {
         let size: u32 = self.body.len() as u32;
         let size_arr = utils::u32_to_be(size);
 		// tracing_id
@@ -107,10 +107,13 @@ impl Message {
         match stream.try_write(&r.as_slice()) {
 			Ok(_) => {
 				debug!("write message successfully");
-			}
-			Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+				return Ok(());
+			},
+			Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+				return Ok(())
+			},
 			Err(e) => {
-				error!("Write {:?} message#{:?} failed: {:?}", self.protocol, self.tracing_id, e);
+				Err(format!("Write {:?} message#{:?} failed: {:?}", self.protocol, self.tracing_id, e).into())
 			}
 		}
     }

@@ -86,18 +86,18 @@ impl NatClient {
                                     match handle_http(&msg).await {
                                         Ok(res) => {
                                             // Send to server
-                                            Message::new_http(msg.tracing_id, res.as_bytes().to_vec()).write_to(&stream).await;
+                                            let _ = Message::new_http(msg.tracing_id, res.as_bytes().to_vec()).write_to(&stream).await;
                                         },
                                         Err(e) => {
                                             error!("Redirect http request failed: {:?}", e);
                                             if e.source().is_some() {
                                                 if "operation timed out" == format!("{}", e.source().unwrap()) {
-                                                    Message::http_504(msg.tracing_id).write_to(&stream).await;
+                                                    let _ = Message::http_504(msg.tracing_id).write_to(&stream).await;
                                                 } else {
-                                                    Message::http_502(msg.tracing_id).write_to(&stream).await;
+                                                    let _ = Message::http_502(msg.tracing_id).write_to(&stream).await;
                                                 }
                                             } else {
-                                                Message::http_502(msg.tracing_id).write_to(&stream).await;
+                                                let _ = Message::http_502(msg.tracing_id).write_to(&stream).await;
                                             }
                                         }
                                     }
@@ -114,7 +114,7 @@ impl NatClient {
                 msg = self.receiver.recv() => match msg {
                     Some(msg) => {
                         // Send to server
-                        msg.write_to(&stream).await;
+                        let _ = msg.write_to(&stream).await;
                     },
                     None => {},
                 }
