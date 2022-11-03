@@ -1,9 +1,9 @@
 use std::{sync::Arc, time::Duration};
 
-use log::{debug, error};
+use log::{debug, error, info};
 use tokio::{sync::{RwLock, mpsc::{UnboundedSender, UnboundedReceiver, self}}, net::TcpStream, time, task, select};
 
-use crate::{NatStream, Message, http::handle_http};
+use crate::{NatStream, Message, http::handle_http, ssh::handle_ssh};
 
 // Client protocol
 pub struct NatClient {
@@ -70,47 +70,52 @@ impl NatClient {
         // Wait for NAT server
         let stream = self.stream.write().await;
         loop {
-            // 读取server发过来的内容
-            // 前四个字节表示消息的字节数，无符号 u32，即最多支持 2^32 次方的消息长度，即 4G
-            // 第五个字节表示协议类型: NAT(0x0), HTTP(0x1), SSH(0x2)
             select! {
-                _ = stream.readable() => {
-                    match Message::from_stream(&stream).await {
-                        Ok(msg) => match msg {
-                            Some(msg) => {
-                                debug!("Received {:?}", msg.protocol);
-                                if msg.is_pong() {
-                                    debug!("You received PONG from NAT server");
-                                }
-                                if msg.is_http() {
-                                    match handle_http(&msg).await {
-                                        Ok(res) => {
-                                            // Send to server
-                                            let _ = Message::new_http(msg.tracing_id, res.as_bytes().to_vec()).write_to(&stream).await;
-                                        },
-                                        Err(e) => {
-                                            error!("Redirect http request failed: {:?}", e);
-                                            if e.source().is_some() {
-                                                if "operation timed out" == format!("{}", e.source().unwrap()) {
-                                                    let _ = Message::http_504(msg.tracing_id).write_to(&stream).await;
-                                                } else {
-                                                    let _ = Message::http_502(msg.tracing_id).write_to(&stream).await;
-                                                }
-                                            } else {
-                                                let _ = Message::http_502(msg.tracing_id).write_to(&stream).await;
-                                            }
-                                        }
-                                    }
-                                }
-                            },
-                            None => {}
-                        },
-                        Err(err) => {
-                            error!("{:?}", err);
-                            break;
-                        },
-                    }
-                },
+				// 从服务端接收请求
+                _ = stream.readable() => match Message::from_stream(&stream).await {
+					Ok(msg) => match msg {
+						Some(msg) if msg.is_pong() => {
+							debug!("You received PONG from NAT server");
+						},
+						Some(msg) if msg.is_http() => match handle_http(&msg).await {
+							Ok(res) => {
+								// Send to server
+								let _ = Message::new_http(msg.tracing_id, res.as_bytes().to_vec()).write_to(&stream).await;
+							},
+							Err(e) => {
+								error!("Redirect http request failed: {:?}", e);
+								if e.source().is_some() {
+									if "operation timed out" == format!("{}", e.source().unwrap()) {
+										let _ = Message::http_504(msg.tracing_id).write_to(&stream).await;
+									} else {
+										let _ = Message::http_502(msg.tracing_id).write_to(&stream).await;
+									}
+								} else {
+									let _ = Message::http_502(msg.tracing_id).write_to(&stream).await;
+								}
+							}
+						},
+						Some(msg) => {
+							if msg.is_ssh() {
+								info!("Received SSH request from server");
+								let reply = match handle_ssh(&msg).await {
+									Ok(reply) => reply,
+									Err(err) => {
+										error!("Handle ssh failed: {:?}", err);
+										b"Error".to_vec()
+									}
+								};
+								info!("Get SSH reply from local: {:?}", reply.len());
+								let _ = Message::new_ssh(msg.tracing_id, reply).write_to(&stream).await;
+							}
+						}
+						None => {}
+					},
+					Err(err) => {
+						error!("{:?}", err);
+						break;
+					},
+				},
                 msg = self.receiver.recv() => match msg {
                     Some(msg) => {
                         // Send to server

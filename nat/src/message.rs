@@ -24,6 +24,13 @@ impl Message {
 			tracing_id: tracing_id,
         }
     }
+	pub fn new_ssh(tracing_id: Option<u32>, body: Vec<u8>) -> Self {
+		Self {
+			protocol: ProtocolType::SSH,
+			body,
+			tracing_id: tracing_id,
+		}
+	}
     pub fn http_502(tracing_id: Option<u32>) -> Self {
         Self {
             protocol: ProtocolType::HTTP,
@@ -121,6 +128,10 @@ impl Message {
     pub fn is_http(&self) -> bool {
         self.protocol == ProtocolType::HTTP
     }
+
+	pub fn is_ssh(&self) -> bool {
+		self.protocol == ProtocolType::SSH
+	}
 
     pub fn is_ping(&self) -> bool {
         self.protocol == ProtocolType::NAT && self.body == PING_BYTES

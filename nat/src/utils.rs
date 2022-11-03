@@ -1,3 +1,6 @@
+use log::{error, debug};
+use tokio::net::TcpStream;
+
 
 // 大端序(Big endian)，字节转 u32
 pub fn as_u32_be(array: &[u8]) -> u32 {
@@ -14,6 +17,27 @@ pub fn u32_to_be(x:u32) -> [u8;4] {
     let b3 : u8 = ((x >> 8) & 0xff) as u8;
     let b4 : u8 = (x & 0xff) as u8;
     return [b1, b2, b3, b4]
+}
+
+pub fn get_packet_from_stream(stream: &TcpStream) -> Vec<u8> {
+	// 获取所有请求报文
+	let mut buffer = [0;1024];
+	let mut bytes:Vec<u8> = Vec::new();
+	loop {
+		match stream.try_read(&mut buffer) {
+			Ok(0) => break,
+			Ok(n) => {
+				bytes.append(&mut buffer[0..n].to_vec());
+			},
+			Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+			Err(err) => {
+				error!("Read failed: {:?}", err);
+				break;
+			}
+		};
+	}
+	debug!("request size: {:?}", bytes.len());
+	bytes
 }
 
 #[cfg(test)]

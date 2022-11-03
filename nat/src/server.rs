@@ -3,7 +3,7 @@ use std::{sync::Arc, collections::HashMap};
 use log::{debug, info, error, warn};
 use tokio::{sync::{RwLock, mpsc::{UnboundedSender, UnboundedReceiver, self}}, select, net::{TcpStream, TcpListener}, io::{AsyncReadExt, AsyncWriteExt}};
 
-use crate::{Message, parse_protocol};
+use crate::{Message, parse_protocol, utils::get_packet_from_stream};
 
 #[derive(Debug)]
 struct Connection {
@@ -30,9 +30,7 @@ fn get_packets(conn: &Connection) -> Vec<u8> {
 			}
 		};
 	}
-	debug!("Http request size: {:?}", bytes.len());
-	let text = std::str::from_utf8(bytes.as_slice()).unwrap().trim_matches('\u{0}').to_string();
-	debug!("{}", text);
+	debug!("request size: {:?}", bytes.len());
 	bytes
 }
 
@@ -47,18 +45,24 @@ pub struct NatServer {
 	http_conn_rx: UnboundedReceiver<Connection>,
 	// tracing sequence
 	tracing_seq: u32,
+	// ssh client channel
+	ssh_conn_tx: UnboundedSender<Connection>,
+	ssh_conn_rx: UnboundedReceiver<Connection>,
 }
 
 impl NatServer {
     pub fn new() -> NatServer {
         let (nat_client_tx, nat_client_rx) = mpsc::unbounded_channel::<TcpStream>();
 		let (http_conn_tx, http_conn_rx) = mpsc::unbounded_channel::<Connection>();
+		let (ssh_conn_tx, ssh_conn_rx) = mpsc::unbounded_channel::<Connection>();
         Self {
 			nat_client_rx,
 			nat_client_tx,
 			nat_client_cnt: 0,
 			http_conn_rx,
 			http_conn_tx,
+			ssh_conn_rx,
+			ssh_conn_tx,
 			tracing_seq: 0,
         }
     }
@@ -84,12 +88,12 @@ impl NatServer {
 			// Send stream to NAT client channel
 			self.nat_client_tx.send(stream)?;
 		} else if protocol.name() == "HTTP" {
-			if self.nat_client_cnt == 0 {
-				// 如果当前没有 nat_client 连接，则返回 502 错误
-				let _  = Message::http_502(None).write_to(&stream).await;
-				let _ = &stream.shutdown().await?;
-			}
 			self.http_conn_tx.send(Connection {
+				init_buf: buffer[0..usize].to_vec(),
+				stream: stream
+			})?;
+		} else if protocol.name() == "SSH" {
+			self.ssh_conn_tx.send(Connection {
 				init_buf: buffer[0..usize].to_vec(),
 				stream: stream
 			})?;
@@ -111,11 +115,13 @@ impl NatServer {
 		// Failed to connect to the client 
 		let (cc_failed_tx, mut cc_failed_rx) = mpsc::unbounded_channel::<bool>();
 		let cc_failed_tx = Arc::new(RwLock::new(cc_failed_tx));
+		// Connection remove channel
+		let (remove_conn_tx, mut remove_conn_rx) = mpsc::unbounded_channel::<u32>();
         loop {
             select! {
 				socket = listener.accept() => match socket {
 					Ok((stream, _)) => {
-						info!("Http connections count: {:?}", connections.len());
+						info!("Connections count: {:?}", connections.len());
 						self.handle_client(stream).await?;
 					},
 					Err(err) => {
@@ -151,11 +157,12 @@ impl NatServer {
 							let cc_failed_tx = cc_failed_tx.write().await;
 							loop {
 								select! {
+									// 读取消息，发送给 Client
 									msg = ncm_rx.recv() => match msg {
 										Some(msg) => {
 											match msg.write_to(&stream).await {
 												Ok(_) => {
-													debug!("Send reply to client successfully");
+													info!("Send request to client successfully");
 												}
 												Err(e) => {
 													// Send to client error
@@ -167,6 +174,7 @@ impl NatServer {
 										},
 										None => {}
 									},
+									// 从 Client 读取消息
 									_ = stream.readable() => {
 										match Message::from_stream(&stream).await {
 											Ok(msg) => match msg {
@@ -174,7 +182,7 @@ impl NatServer {
 													debug!("Received {:?}", msg.protocol);
 													if msg.is_ping() {
 														// 如果收到 Ping，就直接 Pong
-														info!("You received PING from NAT client");
+														debug!("You received PING from NAT client");
 														match Message::pong().write_to(&stream).await {
 															Ok(_) => {},
 															Err(e) => {
@@ -183,9 +191,11 @@ impl NatServer {
 																break;
 															}
 														};
-													}
-													if msg.is_http() {
-														info!("Received HTTP Response from client");
+													} else if msg.is_http() {
+														debug!("Received HTTP Response from client");
+														let _ = client_reply_tx.write().await.send(msg);
+													} else if msg.is_ssh() {
+														info!("Received SSH Response from client");
 														let _ = client_reply_tx.write().await.send(msg);
 													}
 												},
@@ -206,6 +216,7 @@ impl NatServer {
 						error!("Nat client stream from channel is none")
 					},
 				},
+				// HTTP connection
 				http_conn = self.http_conn_rx.recv() => match http_conn {
 					Some(mut conn) if self.nat_client_cnt == 0 => {
 						// 如果当前没有 nat_client 连接，则返回 502 错误
@@ -224,6 +235,23 @@ impl NatServer {
 						error!("Http client stream from channel is none");
 					}
 				},
+				// SSH connection
+				ssh_conn = self.ssh_conn_rx.recv() => match ssh_conn {
+					Some(mut conn) if self.nat_client_cnt == 0 => {
+						warn!("Not exists nat client, shutdown this connections");
+						let _ = &conn.stream.shutdown().await;
+					},
+					Some(conn) => {
+						let bytes = get_packets(&conn);
+						self.tracing_seq += 1;
+						let msg = Message::new_ssh(Some(self.tracing_seq), bytes);
+						connections.insert(self.tracing_seq, conn.stream);
+						ncm_tx.send(msg).unwrap();
+					},
+					None => {
+						error!("SSH client stream from channel is none");
+					}
+				},
 				msg = client_reply_rx.recv() => match msg {
 					Some(msg) => match msg.tracing_id {
 						Some(id) => {
@@ -231,16 +259,40 @@ impl NatServer {
 							let stream = connections.get(&id);
 							match stream {
 								Some(stream) => {
-									debug!("Received HTTP reply from client: {:?}", msg.to_utf8());
+									if msg.is_http() {
+										debug!("Received HTTP reply from client: {:?}", msg.to_utf8());
+									}
+									if msg.is_ssh() {
+										info!("Received SSH reply from client: {:?}", msg.to_utf8());
+									}
+									match stream.writable().await {
+										Ok(_) => {},
+										Err(err) => {
+											error!("Wait stream for reply failed: {:?}, remove it", err);
+											remove_conn_tx.send(id).unwrap();
+										}
+									};
 									match stream.try_write(&msg.body.as_slice()) {
 										Ok(_) => {
-											debug!("write message to http stream successfully");
+											debug!("write message to stream successfully");
 											// shutdown
-											connections.remove(&id);
+											if msg.is_http() {
+												remove_conn_tx.send(id).unwrap();
+											}
+											// 如果是 SSH 连接，接下来得创建线程，跟访问者有来有回了
+											if msg.is_ssh() {
+												select! {
+													_ = stream.readable() => {
+														let bytes = get_packet_from_stream(&stream);
+														// 发送给 Nat client
+														let _ = ncm_tx.send(Message::new_ssh(msg.tracing_id, bytes));
+													}
+												};
+											}
 										}
 										Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
 										Err(e) => {
-											error!("Write response to http stream failed: {:?}", e);
+											error!("Write response to stream failed: {:?}", e);
 										}
 									}
 								},
@@ -255,6 +307,12 @@ impl NatServer {
 					},
 					None => {}
 				},
+				id = remove_conn_rx.recv() => match id {
+					Some(id) => {
+						connections.remove(&id);
+					},
+					None => {}
+				},
 				_ = cc_failed_rx.recv() => {
 					// Client disconnected
 					self.nat_client_cnt -= 1;
@@ -263,4 +321,3 @@ impl NatServer {
         }
     }
 }
-
