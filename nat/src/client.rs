@@ -10,6 +10,7 @@ pub struct NatClient {
     stream: NatStream,
     sender: Arc<RwLock<UnboundedSender<Message>>>,
     receiver: UnboundedReceiver<Message>,
+	ssh: Option<NatStream>
 }
 
 impl NatClient {
@@ -20,6 +21,7 @@ impl NatClient {
             sender: Arc::new(RwLock::new(sender)),
             receiver,
             stream: Arc::new(RwLock::new(stream)),
+			ssh: None,
         })
     }
 
@@ -98,7 +100,14 @@ impl NatClient {
 						Some(msg) => {
 							if msg.is_ssh() {
 								info!("Received SSH request from server");
-								let reply = match handle_ssh(&msg).await {
+								// 检查当前是否已有 SSH 连接，如果没有，先创建连接
+								if self.ssh.is_none() {
+									let target = "127.0.0.1:22";
+									let stream = TcpStream::connect(&target).await.unwrap();
+									self.ssh = Some(Arc::new(RwLock::new(stream)));
+								}
+								let ssh = self.ssh.as_ref().unwrap();
+								let reply = match handle_ssh(&ssh, &msg).await {
 									Ok(reply) => reply,
 									Err(err) => {
 										error!("Handle ssh failed: {:?}", err);
