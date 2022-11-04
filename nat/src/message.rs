@@ -87,16 +87,16 @@ impl Message {
     pub async fn from_stream(
         stream: &TcpStream,
     ) -> Result<Option<Message>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut buffer = Vec::with_capacity(4);
-        match stream.try_read_buf(&mut buffer) {
+        let mut buffer = [0;4];
+        match stream.try_read(&mut buffer) {
             Ok(0) => Err("Connection closed".into()),
             Ok(_) => {
 				debug!("Message received");
                 let data_size = utils::as_u32_be(buffer.as_slice())?;
                 debug!("You received {:?} bytes from NAT stream", data_size);
                 // read protocol type
-                let mut protocol_type_buf = Vec::with_capacity(1);
-                stream.try_read_buf(&mut protocol_type_buf).unwrap();
+                let mut protocol_type_buf = [0;1];
+                stream.try_read(&mut protocol_type_buf).unwrap();
                 let protocol_type = match ProtocolType::from_slice(protocol_type_buf.as_slice()) {
                     Some(pt) => pt,
                     None => {
@@ -110,16 +110,16 @@ impl Message {
 				// read tracing_id
 				let mut tracing_id: Option<u32> = None;
 				if protocol_type != ProtocolType::NAT {
-					let mut tracing_id_buf = Vec::with_capacity(4);
-					stream.try_read_buf(&mut tracing_id_buf).unwrap();
+					let mut tracing_id_buf = [0;4];
+					stream.try_read(&mut tracing_id_buf).unwrap();
 					tracing_id = Some(utils::as_u32_be(tracing_id_buf.as_slice())?);
 				}
 
 				// If SSH, read status
 				let mut ssh_status: Option<SSHStatus> = None;
 				if protocol_type == ProtocolType::SSH {
-					let mut status = Vec::with_capacity(1);
-					stream.try_read_buf(&mut status).unwrap();
+					let mut status = [0;1];
+					stream.try_read(&mut status).unwrap();
 					ssh_status = Some(SSHStatus::from_u8(status[0] as u8));
 				}
 

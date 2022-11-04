@@ -24,7 +24,7 @@ pub fn u32_to_be(x:u32) -> [u8;4] {
 
 pub fn get_packet_from_stream(stream: &TcpStream) -> Vec<u8> {
 	// 获取所有请求报文
-	let mut buffer = [0;1024];
+	let mut buffer = [0;4096]; // Vec::with_capacity(4096);
 	let mut bytes:Vec<u8> = Vec::new();
 	loop {
 		match stream.try_read(&mut buffer) {
