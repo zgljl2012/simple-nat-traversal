@@ -173,6 +173,7 @@ impl NatServer {
 						let ncm_rx = ncm_rx.clone();
 						let client_reply_tx = client_reply_tx.clone();
 						let cc_failed_tx = cc_failed_tx.clone();
+						let ncm_tx = ncm_tx.clone();
 						tokio::spawn(async move {
 							let mut ncm_rx = ncm_rx.write().await;
 							let cc_failed_tx = cc_failed_tx.write().await;
@@ -199,14 +200,7 @@ impl NatServer {
 											Some(msg) if msg.is_ping() => {
 												// 如果收到 Ping，就直接 Pong
 												debug!("You received PING from NAT client");
-												match Message::pong().write_to(&stream).await {
-													Ok(_) => {},
-													Err(e) => {
-														error!("Can't send PONG to client failed: {}", e);
-														cc_failed_tx.send(true).unwrap();
-														break;
-													}
-												};
+												ncm_tx.write().await.send(Message::pong()).unwrap();
 											},
 											Some(msg) if msg.is_http() => {
 												debug!("Received HTTP Response from client");

@@ -102,7 +102,7 @@ impl Message {
                     None => {
                         return Err(format!(
                             "Uncognizaed protocol type: {:?}",
-                            utils::as_u32_be(protocol_type_buf.as_slice())
+                            protocol_type_buf.as_slice()[0] as u8,
                         )
                         .into());
                     }
@@ -177,9 +177,6 @@ impl Message {
 			Ok(_) => {
 				debug!("write message successfully");
 				return Ok(());
-			},
-			Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-				return Ok(())
 			},
 			Err(e) => {
 				Err(format!("Write {:?} message#{:?} failed: {:?}", self.protocol, self.tracing_id, e).into())

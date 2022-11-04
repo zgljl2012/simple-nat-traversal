@@ -39,7 +39,6 @@ impl NatClient {
         };
 		// Create ping timer
 		let mut interval = time::interval(Duration::from_secs(5));
-
 		loop {
             select! {
 				// PING interval
@@ -102,7 +101,7 @@ impl NatClient {
 										};
 										match stream.try_write(&bytes) {
 											Ok(_) => {}
-											// Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+											Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
 											Err(e) => {
 												error!("Write response to SSH stream failed: {:?}", e);
 												ssh_tx.write().await.send(Message::new_ssh_error(tracing_id)).unwrap();
@@ -181,6 +180,7 @@ impl NatClient {
                 msg = rx.recv() => match msg {
                     Some(msg) => {
                         // Send to server
+						info!("Write message to server: {:?} {:?}", msg.protocol, msg.body.len());
                         match msg.write_to(&stream).await {
 							Ok(_) => {},
 							Err(e) => {
