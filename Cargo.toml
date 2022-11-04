@@ -1,5 +1,5 @@
 [package]
-name = "cpc-nat-traversal"
+name = "simple-nat-traversal"
 version = "0.1.0"
 edition = "2021"
 

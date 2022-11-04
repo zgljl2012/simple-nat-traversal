@@ -103,21 +103,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5827cebf4670468b8772dd191856768aedcb1b0278a04f989f7766351917b9dc"
 
 [[package]]
-name = "cpc-nat-traversal"
-version = "0.1.0"
-dependencies = [
- "clap",
- "env_logger",
- "futures",
- "futures-util",
- "log",
- "nat",
- "reqwest",
- "tokio",
- "tokio-stream",
-]
-
-[[package]]
 name = "encoding_rs"
 version = "0.8.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -799,6 +784,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e51e73328dc4ac0c7ccbda3a494dfa03df1de2f46018127f60c693f2648455b0"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "simple-nat-traversal"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "env_logger",
+ "futures",
+ "futures-util",
+ "log",
+ "nat",
+ "reqwest",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
