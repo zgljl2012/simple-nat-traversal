@@ -3,7 +3,7 @@ use std::{sync::Arc, collections::HashMap};
 use log::{debug, info, error, warn};
 use tokio::{sync::{RwLock, mpsc::{UnboundedSender, UnboundedReceiver, self}}, select, net::{TcpStream, TcpListener}, io::{AsyncReadExt, AsyncWriteExt}};
 
-use crate::{Message, parse_protocol, utils::get_packet_from_stream};
+use crate::{Message, parse_protocol, utils::get_packet_from_stream, SSHStatus};
 
 #[derive(Debug)]
 struct Connection {
@@ -73,7 +73,14 @@ impl NatServer {
 		let mut buffer = [0;BATCH_SIZE];
 		// 读取server发过来的内容
 		let usize = stream.read(&mut buffer).await.expect("failed to read data from socket");
-		let first_line = std::str::from_utf8(&buffer).unwrap().trim_matches('\u{0}').to_string();
+		let first_line = match std::str::from_utf8(&buffer) {
+			Ok(first_line) => {
+				first_line.trim_matches('\u{0}').to_string()
+			},
+			Err(_) => {
+				"Error".to_string()
+			}
+		};
 	
 		// Parse protocol
 		let protocol = match parse_protocol(first_line) {
@@ -97,6 +104,8 @@ impl NatServer {
 				init_buf: buffer[0..usize].to_vec(),
 				stream: stream
 			})?;
+		} else {
+			return Err("Unexpected protocol".into());
 		}
 		Ok(())
 	}
@@ -120,13 +129,21 @@ impl NatServer {
 		let (remove_conn_tx, mut remove_conn_rx) = mpsc::unbounded_channel::<u32>();
 		// SSH connection message sender
 		let mut ssh_conns_tx: HashMap<u32, UnboundedSender<Message>> = HashMap::new();
+		// SSH disconnected
+		let (ssh_disconnected_tx, mut ssh_disconnected_rx) = mpsc::unbounded_channel::<u32>();
+		let ssh_disconnected_tx = Arc::new(RwLock::new(ssh_disconnected_tx));
         loop {
             select! {
 				// Socket comming
 				socket = listener.accept() => match socket {
 					Ok((stream, _)) => {
 						info!("Connections count: {:?}", connections.len());
-						self.handle_client(stream).await?;
+						match self.handle_client(stream).await {
+							Ok(_) => {},
+							Err(e) => {
+								error!("Handle client error: {:?}", e);
+							},
+						};
 					},
 					Err(err) => {
 						return Err(Box::new(err))
@@ -244,7 +261,7 @@ impl NatServer {
 						warn!("Not exists nat client, shutdown this connections");
 						let _ = &conn.stream.shutdown().await;
 					},
-					Some(conn) => {
+					Some(mut conn) => {
 						let bytes = get_packets(&conn);
 						self.tracing_seq += 1;
 						let tracing_id = self.tracing_seq.clone();
@@ -257,25 +274,54 @@ impl NatServer {
 						ncm_tx.write().await.send(msg).unwrap();
 						// Start a thread to accept ssh connection
 						let ncm_tx = ncm_tx.clone();
+						let ssh_disconnected_tx = ssh_disconnected_tx.clone();
 						tokio::spawn(async move {
 							loop {
 								select! {
 									// Read from stream
-									_ = conn.stream.readable() => {
-										let bytes = get_packet_from_stream(&conn.stream);
-										// Send to client
-										ncm_tx.write().await.send(Message::new_ssh(Some(tracing_id), bytes)).unwrap();
+									s = conn.stream.readable() => match s {
+										Ok(_) => {
+											let bytes = get_packet_from_stream(&conn.stream);
+											info!("Read from SSH stream: {:?}, and send to client", bytes.len());
+											if bytes.len() > 0 {
+												// Send to client
+												ncm_tx.write().await.send(Message::new_ssh(Some(tracing_id), bytes)).unwrap();
+											} else {
+												error!("SSH disconnected");
+												break;
+											}
+										},
+										// Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+										// },
+										Err(e) => {
+											error!("SSH disconnected: {}", e);
+											break;
+										}
 									},
 									// Read from NAT client
 									msg = rx.recv() => match msg {
 										Some(msg) => {
 											// Write to stream
-											conn.stream.try_write(&msg.body).unwrap();
+											if msg.ssh_status != Some(SSHStatus::Ok) {
+												error!("SSH disconnected");
+												conn.stream.shutdown().await.unwrap();
+												break;
+											} else {
+												match conn.stream.try_write(&msg.body) {
+													Ok(_) => {}
+													Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+													Err(e) => {
+														error!("Write response to SSH stream failed: {:?}", e);
+														break;
+													}
+												};
+											}
 										},
 										None => {}
 									}
 								}
 							}
+							ssh_disconnected_tx.write().await.send(tracing_id).unwrap();
 						});
 					},
 					None => {
@@ -286,9 +332,13 @@ impl NatServer {
 					Some(msg) => match msg.tracing_id {
 						Some(id) if msg.is_ssh() => {
 							// Find sender
-							info!("Received SSH reply from client: {:?}", msg.to_utf8());
-							let tx = ssh_conns_tx.get(&id).unwrap();
-							tx.send(msg).unwrap();
+							info!("Received SSH reply from client");
+							match ssh_conns_tx.get(&id) {
+								Some(tx) => {
+									tx.send(msg).unwrap();
+								},
+								None => {}
+							};
 						},
 						Some(id) => {
 							// Reply from client, according tracing_id, send to specified stream
@@ -334,8 +384,16 @@ impl NatServer {
 					},
 					None => {}
 				},
+				id = ssh_disconnected_rx.recv() => match id {
+					Some(id) => {
+						ssh_conns_tx.remove(&id);
+					},
+					None => {}
+				},
 				_ = cc_failed_rx.recv() => {
 					// Client disconnected
+					error!("Nat Client disconnected");
+					// 将 ncm_rx 中消息全部清空掉
 					self.nat_client_cnt -= 1;
 				}
             }

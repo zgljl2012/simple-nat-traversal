@@ -3,11 +3,14 @@ use tokio::net::TcpStream;
 
 
 // 大端序(Big endian)，字节转 u32
-pub fn as_u32_be(array: &[u8]) -> u32 {
-    ((array[0] as u32) << 24) +
+pub fn as_u32_be(array: &[u8]) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
+	if array.len() != 4 {
+		return Err(format!("This is not a big endian 4 bytes array, you passed in {:?}", array.len()).into());
+	} 
+    Ok(((array[0] as u32) << 24) +
     ((array[1] as u32) << 16) +
     ((array[2] as u32) <<  8) +
-    ((array[3] as u32) <<  0)
+    ((array[3] as u32) <<  0))
 }
 
 // u32 to big endian
@@ -48,6 +51,6 @@ mod tests {
     fn test_u32() {
         let i: [u8; 4] = [0, 0, 0xa, 1];
         println!("\n{:?}", as_u32_be(&i));
-        println!("{:?}\n", u32_to_be(as_u32_be(&i)));
+        println!("{:?}\n", u32_to_be(as_u32_be(&i).unwrap()));
     }
 }

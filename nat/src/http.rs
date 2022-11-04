@@ -18,9 +18,9 @@ impl RequestLine {
     pub fn from_utf8(line: &str) -> Self {
         let mut r = line.trim().split_whitespace();
         Self {
-            method: r.next().unwrap().to_string(),
-            url: r.next().unwrap().to_string(),
-            http_version: r.next().unwrap().to_string(),
+            method: r.next().unwrap_or("GET").to_string(),
+            url: r.next().unwrap_or("Unknown").to_string(),
+            http_version: r.next().unwrap_or("HTTP/1.1").to_string(),
         }
     }
 	pub fn has_body(&self) -> bool {
@@ -83,6 +83,10 @@ pub async fn handle_http(msg: &Message) -> Result<String, Box<dyn std::error::Er
 	debug!("{}", text);
 	let req = HttpRequest::from_utf8(text.as_str());
 
+	if req.request_line.url == "Unknown" {
+		return Err("Unknown request".into());
+	}
+
 	info!("Redirect request to {:?}", req.request_line.url);
 
 	// Check the method
@@ -106,7 +110,7 @@ pub async fn handle_http(msg: &Message) -> Result<String, Box<dyn std::error::Er
 	
 	let mut res_text = String::new();
 	res_text += &format!("{:?} {:?}\r\n", body.version(), body.status().as_u16());
-	let specify = "FROM CPChain----\r\n";
+	let specify = "";
 	for (key, value) in body.headers() {
 		let mut v = value.to_str().unwrap().to_string();
 		if key.to_string() == "content-length" {
