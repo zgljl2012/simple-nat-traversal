@@ -154,19 +154,18 @@ impl NatServer {
 					Some(mut stream) if self.nat_client_cnt > 0 => {
 						// 检测当前是否已有连接
 						error!("Only support only one NAT client at a time");
-						stream.try_write("Reject".as_bytes()).unwrap();
+						let _ = Message::nat_reject().write_to(&stream).await;
 						// shutdown the connect with anther client
 						let _ = stream.shutdown().await;
 					},
 					Some(stream) => {
 						// 开始握手连接, 发送 OK
-						match stream.try_write("OK".as_bytes()) {
+						match Message::nat_ok().write_to(&stream).await {
 							Ok(_) => {
 								debug!("Send reply to client successfully");
 							}
-							Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
 							Err(e) => {
-								return Err(e.into());
+								return Err(format!("Send reply to client failed: {:?}", e).into());
 							}
 						};
 						self.nat_client_cnt += 1;

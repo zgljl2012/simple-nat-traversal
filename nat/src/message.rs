@@ -34,6 +34,8 @@ pub struct Message {
 
 const PING_BYTES: [u8; 1] = [0x0];
 const PONG_BYTES: [u8; 1] = [0x1];
+const NAT_OK: [u8; 1] = [0x2];
+const NAT_REJEXT: [u8; 1] = [0x3];
 
 impl Message {
     pub fn new_http(tracing_id: Option<u32>, body: Vec<u8>) -> Self {
@@ -201,6 +203,10 @@ impl Message {
         self.protocol == ProtocolType::NAT && self.body == PONG_BYTES
     }
 
+	pub fn is_rejected(&self) -> bool {
+		self.protocol == ProtocolType::NAT && self.body == NAT_REJEXT
+	}
+
     pub fn ping() -> Self {
         Self{protocol: ProtocolType::NAT, body: PING_BYTES.to_vec(), tracing_id: None, ssh_status: None,}
     }
@@ -208,6 +214,14 @@ impl Message {
     pub fn pong() -> Self {
         Self{protocol: ProtocolType::NAT, body: PONG_BYTES.to_vec(), tracing_id: None, ssh_status: None,}
     }
+
+	pub fn nat_ok() -> Self {
+		Self{protocol: ProtocolType::NAT, body: NAT_OK.to_vec(), tracing_id: None, ssh_status: None,}	
+	}
+
+	pub fn nat_reject() -> Self {
+		Self{protocol: ProtocolType::NAT, body: NAT_REJEXT.to_vec(), tracing_id: None, ssh_status: None,}	
+	}
 
 	pub fn to_utf8(&self) -> &str {
 		match std::str::from_utf8(&self.body) {
