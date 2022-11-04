@@ -1,6 +1,6 @@
 use std::vec;
 
-use log::{debug, error, info};
+use log::{debug, error};
 use tokio::net::TcpStream;
 
 use crate::{protocols::ProtocolType, utils};
@@ -89,9 +89,9 @@ impl Message {
         match stream.try_read_buf(&mut buffer) {
             Ok(0) => Err("Connection closed".into()),
             Ok(_) => {
-				info!("Message received");
+				debug!("Message received");
                 let data_size = utils::as_u32_be(buffer.as_slice())?;
-                info!("You received {:?} bytes from NAT stream", data_size);
+                debug!("You received {:?} bytes from NAT stream", data_size);
                 // read protocol type
                 let mut protocol_type_buf = Vec::with_capacity(1);
                 stream.try_read_buf(&mut protocol_type_buf).unwrap();
