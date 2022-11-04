@@ -5,7 +5,6 @@ mod http;
 mod message;
 mod server;
 mod client;
-mod ssh;
 
 pub use nat::*;
 pub use protocols::*;

@@ -3,14 +3,13 @@ use std::{sync::Arc, time::Duration};
 use log::{debug, error, info};
 use tokio::{sync::{RwLock, mpsc::{UnboundedSender, UnboundedReceiver, self}}, net::TcpStream, time, task, select};
 
-use crate::{NatStream, Message, http::handle_http, ssh::handle_ssh};
+use crate::{NatStream, Message, http::handle_http, utils};
 
 // Client protocol
 pub struct NatClient {
     stream: NatStream,
     sender: Arc<RwLock<UnboundedSender<Message>>>,
     receiver: UnboundedReceiver<Message>,
-	ssh: Option<NatStream>
 }
 
 impl NatClient {
@@ -21,7 +20,6 @@ impl NatClient {
             sender: Arc::new(RwLock::new(sender)),
             receiver,
             stream: Arc::new(RwLock::new(stream)),
-			ssh: None,
         })
     }
 
@@ -71,6 +69,12 @@ impl NatClient {
     pub async fn run_forever(&mut self) {
         // Wait for NAT server
         let stream = self.stream.write().await;
+		let mut ssh_existed = false;
+		// Send and receiver from ssh stream
+		let (ssh_tx, mut ssh_rx) = mpsc::unbounded_channel::<Message>();
+		let ssh_tx = Arc::new(RwLock::new(ssh_tx));
+		let (ssh_tx_reverse, ssh_rx_reverse) = mpsc::unbounded_channel::<Message>();
+		let ssh_rx_reverse = Arc::new(RwLock::new(ssh_rx_reverse));
         loop {
             select! {
 				// 从服务端接收请求
@@ -97,33 +101,58 @@ impl NatClient {
 								}
 							}
 						},
-						Some(msg) => {
-							if msg.is_ssh() {
-								info!("Received SSH request from server");
-								// 检查当前是否已有 SSH 连接，如果没有，先创建连接
-								if self.ssh.is_none() {
-									let target = "127.0.0.1:22";
-									let stream = TcpStream::connect(&target).await.unwrap();
-									self.ssh = Some(Arc::new(RwLock::new(stream)));
-								}
-								let ssh = self.ssh.as_ref().unwrap();
-								let reply = match handle_ssh(&ssh, &msg).await {
-									Ok(reply) => reply,
-									Err(err) => {
-										error!("Handle ssh failed: {:?}", err);
-										b"Error".to_vec()
+						// SSH 消息，且当前未创建本地 SSH
+						Some(msg) if msg.is_ssh() && !ssh_existed => {
+							info!("Received SSH request from server");
+							// 检查当前是否已有 SSH 连接，如果没有，先创建连接，连接不停等待
+							let ssh_tx = ssh_tx.clone();
+							let bytes = msg.body.clone();
+							let tracing_id = msg.tracing_id.clone();
+							let ssh_rx_reverse = ssh_rx_reverse.clone();
+							tokio::spawn(async move {
+								let target = "127.0.0.1:22";
+								let stream = TcpStream::connect(&target).await.unwrap();
+								stream.try_write(&bytes).unwrap();
+								let mut ssh_rx_reverse = ssh_rx_reverse.write().await;
+								loop {
+									select! {
+										_ = stream.readable() => {
+											// 获取所有请求报文
+											let bytes = utils::get_packet_from_stream(&stream);
+											info!("Get SSH reply from local: {:?}", bytes.len());
+											ssh_tx.write().await.send(Message::new_ssh(tracing_id, bytes)).unwrap();
+										},
+										msg = ssh_rx_reverse.recv() => match msg {
+											Some(msg) => {
+												stream.try_write(&msg.body).unwrap();
+											},
+											None => {}
+										}
 									}
-								};
-								info!("Get SSH reply from local: {:?}", reply.len());
-								let _ = Message::new_ssh(msg.tracing_id, reply).write_to(&stream).await;
-							}
-						}
+								}
+							});
+							ssh_existed = true;
+						},
+						// SSH 消息，且当前已创建 SSH 连接
+						Some(msg) if msg.is_ssh() && ssh_existed => {
+							// 将消息发送给 SSH thread
+							ssh_tx_reverse.send(msg).unwrap();
+						},
+						Some(_) => {},
 						None => {}
 					},
 					Err(err) => {
 						error!("{:?}", err);
 						break;
 					},
+				},
+				// Read from SSH stream
+				msg = ssh_rx.recv() => match msg {
+					Some(msg) => {
+						// Send to server
+						msg.write_to(&stream).await.unwrap();
+					},
+					None => {}
 				},
                 msg = self.receiver.recv() => match msg {
                     Some(msg) => {
