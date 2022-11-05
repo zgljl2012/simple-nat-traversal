@@ -165,7 +165,7 @@ impl Message {
 						},
 					};
 				}
-				bytes.append(&mut data[0..(data_size as usize)].to_vec());
+				bytes.append(&mut data.to_vec());
 				// Validate checksum
 				if checksum::checksum(&bytes) != 0 {
 					return Err("Checksum is not correct".into());

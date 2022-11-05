@@ -120,7 +120,20 @@ impl NatClient {
 															ssh_tx.write().await.send(Message::new_ssh_error(tracing_id)).unwrap();
 															break;
 														}
-														ssh_tx.write().await.send(Message::new_ssh(tracing_id, bytes)).unwrap();
+														// 将报文按固定字节分批次发送，有利于服务稳定
+														let mut i: usize = 0;
+														const BATCH_SIZE: usize = 512;
+														loop {
+															let mut end = i + BATCH_SIZE;
+															if end > bytes.len() {
+																end = bytes.len();
+															}
+															ssh_tx.write().await.send(Message::new_ssh(tracing_id, bytes[i..end].to_vec())).unwrap();	
+															i += BATCH_SIZE;
+															if i >= bytes.len() {
+																break;
+															}
+														}
 													},
 													Err(e) => {
 														error!("Local SSH disconnected: {:?}", e);
