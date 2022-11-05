@@ -54,7 +54,7 @@ impl NatClient {
 					tx.write().await.send(Message::ping()).unwrap();
 				},
 				// 从服务端接收请求
-                _ = stream.readable() => match Message::from_stream(&stream).await {
+                _ = stream.readable() => match Message::from_stream(&self.ctx, &stream).await {
 					Ok(msg) => match msg {
 						Some(msg) if msg.is_rejected() => {
 							error!("Server reject us");
@@ -193,7 +193,7 @@ impl NatClient {
                     Some(msg) => {
                         // Send to server
 						debug!("Write message to server: {:?} {:?}", msg.protocol, msg.body.len());
-                        match msg.write_to(&stream).await {
+                        match msg.write_to(&self.ctx, &stream).await {
 							Ok(_) => {},
 							Err(e) => {
 								error!("Write to server failed: {:?}", e);

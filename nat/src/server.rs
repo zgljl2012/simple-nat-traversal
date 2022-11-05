@@ -156,13 +156,13 @@ impl NatServer {
 					Some(mut stream) if self.nat_client_cnt > 0 => {
 						// 检测当前是否已有连接
 						error!("Only support only one NAT client at a time");
-						let _ = Message::nat_reject().write_to(&stream).await;
+						let _ = Message::nat_reject().write_to(&self.ctx, &stream).await;
 						// shutdown the connect with anther client
 						let _ = stream.shutdown().await;
 					},
 					Some(stream) => {
 						// 开始握手连接, 发送 OK
-						match Message::nat_ok().write_to(&stream).await {
+						match Message::nat_ok().write_to(&self.ctx, &stream).await {
 							Ok(_) => {
 								debug!("Send reply to client successfully");
 							}
@@ -176,6 +176,7 @@ impl NatServer {
 						let client_reply_tx = client_reply_tx.clone();
 						let cc_failed_tx = cc_failed_tx.clone();
 						let ncm_tx = ncm_tx.clone();
+						let ctx = self.ctx.clone();
 						tokio::spawn(async move {
 							let mut ncm_rx = ncm_rx.write().await;
 							let cc_failed_tx = cc_failed_tx.write().await;
@@ -183,7 +184,7 @@ impl NatServer {
 								select! {
 									// 读取消息，发送给 Client
 									msg = ncm_rx.recv() => match msg {
-										Some(msg) => match msg.write_to(&stream).await {
+										Some(msg) => match msg.write_to(&ctx, &stream).await {
 											Ok(_) => {
 												debug!("Send request to client successfully: {:?} {:?}", msg.protocol, msg.body.len());
 											}
@@ -197,7 +198,7 @@ impl NatServer {
 										None => {}
 									},
 									// 从 Client 读取消息
-									_ = stream.readable() => match Message::from_stream(&stream).await {
+									_ = stream.readable() => match Message::from_stream(&ctx, &stream).await {
 										Ok(msg) => match msg {
 											Some(msg) if msg.is_ping() => {
 												// 如果收到 Ping，就直接 Pong

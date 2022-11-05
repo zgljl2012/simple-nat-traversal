@@ -3,7 +3,7 @@ use std::vec;
 use log::{debug, error, warn};
 use tokio::net::TcpStream;
 
-use crate::{protocols::ProtocolType, utils, checksum::{self}};
+use crate::{protocols::ProtocolType, utils, checksum::{self}, Context, crypto::encrypt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SSHStatus {
@@ -86,6 +86,7 @@ impl Message {
     // 除 NAT 类型外，第 6-9 共 4 字节表示 tracing ID
 	// 对于 SSH 协议，第 10 个字节表示状态编码（0: 正常，1: 未知错误，2:...）
     pub async fn from_stream(
+		ctx: &Context,
         stream: &TcpStream,
     ) -> Result<Option<Message>, Box<dyn std::error::Error + Send + Sync>> {
         let mut buffer = [0;2];
@@ -183,7 +184,7 @@ impl Message {
     }
 
     // Write standard message to stream
-    pub async fn write_to(&self, stream: &TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn write_to(&self, ctx: &Context, stream: &TcpStream) -> Result<(), Box<dyn std::error::Error>> {
         let size: u32 = self.body.len() as u32;
 		if size >= 2_u32.pow(16) {
 			return Err("Message too big".into())
