@@ -215,9 +215,9 @@ impl NatServer {
 											}
 											None => {}
 										},
-										Err(err) if format!("{}", err).contains("Uncognizaed protocol type") => {
-											warn!("Received {:?}, this a error packet, discard it", err);
-										},
+										// Err(err) if format!("{}", err).contains("Uncognizaed protocol type") => {
+										// 	warn!("Received {:?}, this a error packet, discard it", err);
+										// },
 										Err(err) => {
 											error!("{}", err);
 											cc_failed_tx.send(true).unwrap();
