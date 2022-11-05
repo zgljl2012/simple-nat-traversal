@@ -304,16 +304,34 @@ impl NatServer {
 												break;
 											} else {
 												info!("Try to send {} bytes to SSH connection", msg.body.len());
-												match conn.stream.try_write(&msg.body) {
-													Ok(n) => {
-														info!("Send {} bytes to SSH connection", n);
+												// 分批次发送
+												const BATCH_SIZE: usize = 512;
+												let mut i: usize = 0;
+												let mut has_error: bool = false;
+												loop {
+													let mut end = i + BATCH_SIZE;
+													if end > msg.body.len() {
+														end = msg.body.len();
 													}
-													Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-													Err(e) => {
-														error!("Write response to SSH stream failed: {:?}", e);
-														break;
-													}
-												};
+													match conn.stream.try_write(&msg.body[i..end]) {
+														Ok(n) => {
+															info!("Send {} bytes to SSH connection", n);
+															i += BATCH_SIZE;
+															if i >= msg.body.len() {
+																break;
+															}
+														}
+														Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+														Err(e) => {
+															has_error = true;
+															error!("Write response to SSH stream failed: {:?}", e);
+															break;
+														}
+													};
+												}	
+												if has_error {
+													break;
+												}
 											}
 										},
 										None => {}
