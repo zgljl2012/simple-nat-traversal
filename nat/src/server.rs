@@ -3,7 +3,7 @@ use std::{sync::Arc, collections::HashMap};
 use log::{debug, info, error, warn};
 use tokio::{sync::{RwLock, mpsc::{UnboundedSender, UnboundedReceiver, self}}, select, net::{TcpStream, TcpListener}, io::{AsyncReadExt, AsyncWriteExt}};
 
-use crate::{Message, parse_protocol, utils::get_packet_from_stream, SSHStatus};
+use crate::{Message, parse_protocol, utils::get_packet_from_stream, SSHStatus, Context};
 
 #[derive(Debug)]
 struct Connection {
@@ -35,6 +35,7 @@ fn get_packets(conn: &Connection) -> Vec<u8> {
 }
 
 pub struct NatServer {
+	ctx: Context,
     // Nat client channel
 	nat_client_tx: UnboundedSender<TcpStream>,
 	nat_client_rx: UnboundedReceiver<TcpStream>,
@@ -51,11 +52,12 @@ pub struct NatServer {
 }
 
 impl NatServer {
-    pub fn new() -> NatServer {
+    pub fn new(ctx: Context) -> NatServer {
         let (nat_client_tx, nat_client_rx) = mpsc::unbounded_channel::<TcpStream>();
 		let (http_conn_tx, http_conn_rx) = mpsc::unbounded_channel::<Connection>();
 		let (ssh_conn_tx, ssh_conn_rx) = mpsc::unbounded_channel::<Connection>();
         Self {
+			ctx,
 			nat_client_rx,
 			nat_client_tx,
 			nat_client_cnt: 0,
@@ -69,8 +71,7 @@ impl NatServer {
 
     async fn handle_client(&self, mut stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
 		// Parse the first line
-		const BATCH_SIZE: usize = 64;
-		let mut buffer = [0;BATCH_SIZE];
+		let mut buffer = [0;64];
 		// 读取server发过来的内容
 		let usize = stream.read(&mut buffer).await.expect("failed to read data from socket");
 		let first_line = match std::str::from_utf8(&buffer) {
@@ -132,6 +133,7 @@ impl NatServer {
 		// SSH disconnected
 		let (ssh_disconnected_tx, mut ssh_disconnected_rx) = mpsc::unbounded_channel::<u32>();
 		let ssh_disconnected_tx = Arc::new(RwLock::new(ssh_disconnected_tx));
+		let batch_size = self.ctx.get_ssh_mtu();
         loop {
             select! {
 				// Socket comming
@@ -305,18 +307,17 @@ impl NatServer {
 											} else {
 												info!("Try to send {} bytes to SSH connection", msg.body.len());
 												// 分批次发送
-												const BATCH_SIZE: usize = 512;
 												let mut i: usize = 0;
 												let mut has_error: bool = false;
 												loop {
-													let mut end = i + BATCH_SIZE;
+													let mut end = i + batch_size;
 													if end > msg.body.len() {
 														end = msg.body.len();
 													}
 													match conn.stream.try_write(&msg.body[i..end]) {
 														Ok(n) => {
 															info!("Send {} bytes to SSH connection", n);
-															i += BATCH_SIZE;
+															i += batch_size;
 															if i >= msg.body.len() {
 																break;
 															}

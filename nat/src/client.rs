@@ -3,16 +3,18 @@ use std::{sync::Arc, time::Duration};
 use log::{debug, error, info, warn};
 use tokio::{sync::{RwLock, mpsc::{self}}, net::TcpStream, time, select, io::AsyncWriteExt};
 
-use crate::{Message, http::handle_http, utils, SSHStatus};
+use crate::{Message, http::handle_http, utils, SSHStatus, Context};
 
 // Client protocol
 pub struct NatClient {
+	ctx: Context,
     server_url: String,
 }
 
 impl NatClient {
-    pub async fn new(server_url: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(server_url: &str, ctx: Context) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
+			ctx,
 			server_url: server_url.to_string()
         })
     }
@@ -42,6 +44,7 @@ impl NatClient {
         };
 		// Create ping timer
 		let mut interval = time::interval(Duration::from_secs(5));
+		let batch_size: usize = self.ctx.get_ssh_mtu();
 		loop {
             select! {
 				// PING interval
@@ -110,14 +113,13 @@ impl NatClient {
 														}
 														// 将报文按固定字节分批次发送，有利于服务稳定
 														let mut i: usize = 0;
-														const BATCH_SIZE: usize = 512;
 														loop {
-															let mut end = i + BATCH_SIZE;
+															let mut end = i + batch_size;
 															if end > bytes.len() {
 																end = bytes.len();
 															}
 															ssh_tx.write().await.send(Message::new_ssh(tracing_id, bytes[i..end].to_vec())).unwrap();	
-															i += BATCH_SIZE;
+															i += batch_size;
 															if i >= bytes.len() {
 																break;
 															}

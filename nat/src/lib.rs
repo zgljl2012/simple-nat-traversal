@@ -5,9 +5,11 @@ mod message;
 mod server;
 mod client;
 mod checksum;
+mod context;
 
 // pub use nat::*;
 pub use protocols::*;
 pub use message::*;
 pub use server::*;
 pub use client::*;
+pub use context::*;
