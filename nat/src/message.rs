@@ -1,9 +1,9 @@
 use std::vec;
 
-use log::{debug, error};
+use log::{debug, error, info};
 use tokio::net::TcpStream;
 
-use crate::{protocols::ProtocolType, utils};
+use crate::{protocols::ProtocolType, utils, checksum};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SSHStatus {
@@ -81,19 +81,29 @@ impl Message {
 
     // 二进制协议 - NAT 通信协议
     // 前 2 个字节表示消息的字节数，无符号 u16，即最多支持 2^16 次方的消息长度，即 64 KB
+	// 3、4 字节表示消息的 Checksum
     // 第 5 个字节表示协议类型: NAT(0x0), HTTP(0x1), SSH(0x2)
     // 除 NAT 类型外，第 6-9 共 4 字节表示 tracing ID
 	// 对于 SSH 协议，第 10 个字节表示状态编码（0: 正常，1: 未知错误，2:...）
     pub async fn from_stream(
         stream: &TcpStream,
     ) -> Result<Option<Message>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut buffer = [0;4];
+        let mut buffer = [0;2];
         match stream.try_read(&mut buffer) {
             Ok(0) => Err("Connection closed".into()),
             Ok(_) => {
 				debug!("Message received");
-                let data_size = utils::as_u32_be(buffer.as_slice())?;
-                debug!("You received {:?} bytes from NAT stream", data_size);
+                let data_size = match utils::as_u16_be(buffer.as_slice()) {
+					Ok(size) => size,
+					Err(err) => {
+						return Err(format!("Parse data size failed: {}", err).into());
+					}
+				};
+				debug!("You received {:?} bytes from NAT stream", data_size);
+				// TODO Checksum, skip now
+				let mut buf = [0;2];
+				stream.try_read(&mut buf).unwrap();
+
                 // read protocol type
                 let mut protocol_type_buf = [0;1];
                 stream.try_read(&mut protocol_type_buf).unwrap();
@@ -147,10 +157,12 @@ impl Message {
     // Write standard message to stream
     pub async fn write_to(&self, stream: &TcpStream) -> Result<(), Box<dyn std::error::Error>> {
         let size: u32 = self.body.len() as u32;
-		if size >= 2 ^ 16 {
+		if size >= 2_u32.pow(16) {
 			return Err("Message too big".into())
 		}
-        let size_arr = utils::u32_to_be(size);
+        let size_arr = utils::u16_to_be(size as u16);
+		// init checksum, set to zero
+		let init_checksum: [u8; 2] = [0, 0];
 		// tracing_id
 		let tracing_id: Vec<u8> = match self.tracing_id {
 			Some(id) => utils::u32_to_be(id).to_vec(),
@@ -167,14 +179,20 @@ impl Message {
 				}
 			},
 		};
-        let r: Vec<u8> = [
+        let mut r: Vec<u8> = [
             &size_arr,
+			&init_checksum,
             self.protocol.bytes().to_vec().as_slice(),
 			tracing_id.as_slice(),
 			ssh_status.as_slice(),
             self.body.as_slice(),
         ]
         .concat();
+		// Calculate checksum
+		let checksum = utils::u16_to_be(checksum::checksum(r.as_slice()));
+		r[2] = checksum[0];
+		r[3] = checksum[1];
+
         stream.writable().await.unwrap();
         match stream.try_write(&r.as_slice()) {
 			Ok(_) => {
