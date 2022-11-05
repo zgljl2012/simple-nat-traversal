@@ -6,6 +6,7 @@ mod server;
 mod client;
 mod checksum;
 mod context;
+mod crypto;
 
 // pub use nat::*;
 pub use protocols::*;

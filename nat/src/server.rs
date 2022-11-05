@@ -185,7 +185,7 @@ impl NatServer {
 									msg = ncm_rx.recv() => match msg {
 										Some(msg) => match msg.write_to(&stream).await {
 											Ok(_) => {
-												info!("Send request to client successfully");
+												debug!("Send request to client successfully: {:?} {:?}", msg.protocol, msg.body.len());
 											}
 											Err(e) => {
 												// Send to client error

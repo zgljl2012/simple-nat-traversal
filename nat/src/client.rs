@@ -192,7 +192,7 @@ impl NatClient {
                 msg = rx.recv() => match msg {
                     Some(msg) => {
                         // Send to server
-						info!("Write message to server: {:?} {:?}", msg.protocol, msg.body.len());
+						debug!("Write message to server: {:?} {:?}", msg.protocol, msg.body.len());
                         match msg.write_to(&stream).await {
 							Ok(_) => {},
 							Err(e) => {
