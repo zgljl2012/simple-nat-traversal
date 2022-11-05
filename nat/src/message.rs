@@ -144,13 +144,24 @@ impl Message {
 
                 // Read other bytes
                 let mut data = Vec::with_capacity(data_size as usize);
-				match stream.try_read_buf(&mut data) {
-                    Ok(_) => {},
-					Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {},
-                    Err(e) => {
-						error!("Read error: {}", e);
-					},
-                };
+				let mut rest: usize = data_size as usize;
+				loop {
+					let mut buf: Vec<u8> = Vec::with_capacity(rest);
+					match stream.try_read_buf(&mut buf) {
+						Ok(n) => {
+							data.append(&mut buf[0..n].to_vec());
+							if data.len() >= data_size as usize {
+								break;
+							}
+							rest -= n;
+						},
+						Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {},
+						Err(e) => {
+							error!("Read error: {}", e);
+							break;
+						},
+					};
+				}
 				bytes.append(&mut data[0..(data_size as usize)].to_vec());
 				// Validate checksum
 				if checksum::checksum(&bytes) != 0 {

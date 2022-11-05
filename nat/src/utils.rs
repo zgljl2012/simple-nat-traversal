@@ -1,4 +1,4 @@
-use log::{error, debug, info};
+use log::{error, debug};
 use tokio::net::TcpStream;
 
 
@@ -54,7 +54,7 @@ pub fn get_packet_from_stream(stream: &TcpStream) -> Vec<u8> {
 			}
 		};
 	}
-	info!("packet size: {:?}", bytes.len());
+	debug!("packet size: {:?}", bytes.len());
 	bytes
 }
 
