@@ -1,6 +1,6 @@
 use std::vec;
 
-use log::{debug, error};
+use log::{debug, error, warn};
 use tokio::net::TcpStream;
 
 use crate::{protocols::ProtocolType, utils, checksum::{self}};
@@ -155,7 +155,10 @@ impl Message {
 							}
 							rest -= n;
 						},
-						Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {},
+						Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+							warn!("Message data should receive {} bytes, still have {} bytes not received, but stream maybe blocked, so break the loop", data.len(), rest);
+							break;
+						},
 						Err(e) => {
 							error!("Read error: {}", e);
 							break;
