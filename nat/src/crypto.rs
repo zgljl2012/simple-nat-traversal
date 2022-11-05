@@ -1,24 +1,25 @@
 use aes::Aes256;
 use aes::cipher::{
-    BlockCipher, BlockEncrypt, BlockDecrypt, KeyInit,
+    BlockEncrypt, BlockDecrypt, KeyInit,
     generic_array::GenericArray,
 };
-use scrypt::Scrypt;
-use scrypt::password_hash::{SaltString, PasswordHasher};
+use sha2::{Sha256, Digest};
 
 // Generate 32 bytes (256 bit) secret
 pub fn kdf(password: &String) -> Result<[u8; 32], Box<dyn std::error::Error>> {
-	// Use fixed salt
-	let salt = SaltString::b64_encode(&[0, 0, 0, 0])?;
-	// Hash password to PHC string ($scrypt$...)
-	let secret = Scrypt.hash_password(password.as_bytes(), &salt)?;
-	let binding = secret.hash.unwrap();
- 	let bytes = binding.as_bytes();
-	let mut result: [u8; 32] = [0; 32];
-	for i in 0..32 {
-		result[i] = bytes[i].clone();
+	// create a Sha256 object
+	let mut hasher = Sha256::new();
+
+	// write input message
+	hasher.update(password.as_bytes());
+
+	// read hash digest and consume hasher
+	let result = hasher.finalize();
+	let mut key: [u8;32] = [0;32];
+	for i in 0..result.len() {
+		key[i] = result[i];
 	}
-	Ok(result)
+	Ok(key)
 }
 
 const AES_BLOCK_SIZE: usize = 16;
@@ -69,7 +70,7 @@ pub fn decrypt(key: [u8; 32], data: Vec<u8>) -> Vec<u8> {
 		i += AES_BLOCK_SIZE;
 		if i >= data.len() {
 			let r = &mut block.to_vec();
-			while r[r.len() -1] == 0 {
+			while r.len() > 0 && r[r.len() - 1] == 0 {
 				r.pop();
 			}
 			result.append(r);

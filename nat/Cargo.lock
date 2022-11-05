@@ -562,6 +562,7 @@ dependencies = [
  "log",
  "reqwest",
  "scrypt",
+ "sha2",
  "tokio",
  "tokio-stream",
 ]

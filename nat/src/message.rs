@@ -3,7 +3,7 @@ use std::vec;
 use log::{debug, error, warn};
 use tokio::net::TcpStream;
 
-use crate::{protocols::ProtocolType, utils, checksum::{self}, Context, crypto::encrypt};
+use crate::{protocols::ProtocolType, utils, checksum::{self}, Context, crypto::{encrypt, decrypt}};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SSHStatus {
@@ -80,7 +80,8 @@ impl Message {
     }
 
     // 二进制协议 - NAT 通信协议
-    // 前 2 个字节表示消息的字节数，无符号 u16，即最多支持 2^16 次方的消息长度，即 64 KB
+	// 具体消息先 AES 加密（因 SSH 本身就是加密流量，故不加密 SSH 消息），消息头不加密
+    // 前 2 个字节表示加密后的消息的字节数，无符号 u16，即最多支持 2^16 次方的消息长度，即 64 KB
 	// 3、4 字节表示消息的 Checksum
     // 第 5 个字节表示协议类型: NAT(0x0), HTTP(0x1), SSH(0x2)
     // 除 NAT 类型外，第 6-9 共 4 字节表示 tracing ID
@@ -106,7 +107,7 @@ impl Message {
 				let mut bytes: Vec<u8> = Vec::new();
 				bytes.append(&mut buffer.clone().to_vec());
 				debug!("You received {:?} bytes from NAT stream", data_size);
-				// TODO Checksum, skip now
+				// Checksum
 				let mut buf = [0;2];
 				stream.try_read(&mut buf).unwrap();
 				bytes.append(&mut buf.clone().to_vec());
@@ -171,9 +172,14 @@ impl Message {
 				if checksum::checksum(&bytes) != 0 {
 					return Err("Checksum is not correct".into());
 				}
+				// decrypt data
+				let mut decrypted = data.clone();
+				if protocol_type != ProtocolType::SSH {
+					decrypted = decrypt(ctx.get_secret(), decrypted);
+				}
                 Ok(Some(Message {
                     protocol: protocol_type,
-                    body: data,
+                    body: decrypted,
 					tracing_id,
 					ssh_status,
                 }))
@@ -185,7 +191,12 @@ impl Message {
 
     // Write standard message to stream
     pub async fn write_to(&self, ctx: &Context, stream: &TcpStream) -> Result<(), Box<dyn std::error::Error>> {
-        let size: u32 = self.body.len() as u32;
+		// Encrypt message
+		let mut encrypted = self.body.clone();
+		if self.protocol != ProtocolType::SSH {
+			encrypted = encrypt(ctx.get_secret(), encrypted);
+		}
+        let size: u32 = encrypted.len() as u32;
 		if size >= 2_u32.pow(16) {
 			return Err("Message too big".into())
 		}
@@ -214,7 +225,7 @@ impl Message {
             self.protocol.bytes().to_vec().as_slice(),
 			tracing_id.as_slice(),
 			ssh_status.as_slice(),
-            self.body.as_slice(),
+            encrypted.as_slice(),
         ]
         .concat();
 		// Calculate checksum

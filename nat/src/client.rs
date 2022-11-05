@@ -21,7 +21,7 @@ impl NatClient {
 
     pub async fn run_forever(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Wait for NAT server
-		let stream = TcpStream::connect(&self.server_url).await?;
+		let mut stream = TcpStream::connect(&self.server_url).await?;
 		// If there is exists SSH connection
 		let ssh_existed = Arc::new(RwLock::new(false));
 		// Send and receiver from ssh stream
@@ -58,7 +58,8 @@ impl NatClient {
 					Ok(msg) => match msg {
 						Some(msg) if msg.is_rejected() => {
 							error!("Server reject us");
-							break;
+							let _ = stream.shutdown().await;
+							return Err("Server rejected us".into());
 						},
 						Some(msg) if msg.is_pong() => {
 							debug!("You received PONG from NAT server");
