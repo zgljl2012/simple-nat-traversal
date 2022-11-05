@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use log::{debug, error, info, warn};
-use tokio::{sync::{RwLock, mpsc::{self}}, net::TcpStream, time, select};
+use tokio::{sync::{RwLock, mpsc::{self}}, net::TcpStream, time, select, io::AsyncWriteExt};
 
 use crate::{Message, http::handle_http, utils, SSHStatus};
 
@@ -91,7 +91,7 @@ impl NatClient {
 									let ssh_rx_reverse = ssh_rx_reverse.clone();
 									tokio::spawn(async move {
 										let target = "127.0.0.1:22";
-										let stream = match TcpStream::connect(&target).await {
+										let mut stream = match TcpStream::connect(&target).await {
 											Ok(stream) => stream,
 											Err(e) => {
 												error!("Connect to local SSH server failed: {}", e);
@@ -130,6 +130,11 @@ impl NatClient {
 												},
 												msg = ssh_rx_reverse.recv() => match msg {
 													Some(msg) => {
+														if msg.ssh_status != Some(SSHStatus::Ok) {
+															error!("The SSH connection of server have been disconnected, so close the SSH connection of client");
+															let _ = stream.shutdown();
+															break;
+														}
 														match stream.try_write(&msg.body) {
 															Ok(n) => {
 																info!("Write to local SSH: {:?}", n);
@@ -155,6 +160,9 @@ impl NatClient {
 						},
 						// SSH 消息，且当前已创建 SSH 连接
 						Some(msg) if msg.is_ssh() && *ssh_existed.read().await => {
+							if msg.ssh_status != Some(SSHStatus::Ok) {
+								*ssh_existed.write().await = false;
+							}
 							// 将消息发送给 SSH thread
 							ssh_tx_reverse.send(msg).unwrap();
 						},

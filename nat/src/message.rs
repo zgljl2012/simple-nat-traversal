@@ -1,9 +1,9 @@
 use std::vec;
 
-use log::{debug, error, info};
+use log::{debug, error};
 use tokio::net::TcpStream;
 
-use crate::{protocols::ProtocolType, utils, checksum};
+use crate::{protocols::ProtocolType, utils, checksum::{self}};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SSHStatus {
@@ -89,6 +89,8 @@ impl Message {
         stream: &TcpStream,
     ) -> Result<Option<Message>, Box<dyn std::error::Error + Send + Sync>> {
         let mut buffer = [0;2];
+		// 此处必须按字节老老实实一个个解析，因为如果一次性读取，先读取再解析，会导致读取了下一条的消息内容
+		// 导致本条消息出错，即便是处理了本条消息，也会导致下一条消息不完整
         match stream.try_read(&mut buffer) {
             Ok(0) => Err("Connection closed".into()),
             Ok(_) => {
@@ -99,14 +101,19 @@ impl Message {
 						return Err(format!("Parse data size failed: {}", err).into());
 					}
 				};
+				// full bytes message
+				let mut bytes: Vec<u8> = Vec::new();
+				bytes.append(&mut buffer.clone().to_vec());
 				debug!("You received {:?} bytes from NAT stream", data_size);
 				// TODO Checksum, skip now
 				let mut buf = [0;2];
 				stream.try_read(&mut buf).unwrap();
+				bytes.append(&mut buf.clone().to_vec());
 
                 // read protocol type
                 let mut protocol_type_buf = [0;1];
                 stream.try_read(&mut protocol_type_buf).unwrap();
+				bytes.append(&mut protocol_type_buf.clone().to_vec());
                 let protocol_type = match ProtocolType::from_slice(protocol_type_buf.as_slice()) {
                     Some(pt) => pt,
                     None => {
@@ -122,6 +129,7 @@ impl Message {
 				if protocol_type != ProtocolType::NAT {
 					let mut tracing_id_buf = [0;4];
 					stream.try_read(&mut tracing_id_buf).unwrap();
+					bytes.append(&mut tracing_id_buf.clone().to_vec());
 					tracing_id = Some(utils::as_u32_be(tracing_id_buf.as_slice())?);
 				}
 
@@ -130,18 +138,24 @@ impl Message {
 				if protocol_type == ProtocolType::SSH {
 					let mut status = [0;1];
 					stream.try_read(&mut status).unwrap();
+					bytes.append(&mut status.clone().to_vec());
 					ssh_status = Some(SSHStatus::from_u8(status[0] as u8));
 				}
 
                 // Read other bytes
                 let mut data = Vec::with_capacity(data_size as usize);
-                match stream.try_read_buf(&mut data) {
+				match stream.try_read_buf(&mut data) {
                     Ok(_) => {},
 					Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {},
                     Err(e) => {
 						error!("Read error: {}", e);
 					},
                 };
+				bytes.append(&mut data[0..(data_size as usize)].to_vec());
+				// Validate checksum
+				if checksum::checksum(&bytes) != 0 {
+					return Err("Checksum is not correct".into());
+				}
                 Ok(Some(Message {
                     protocol: protocol_type,
                     body: data,

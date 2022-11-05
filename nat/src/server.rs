@@ -284,11 +284,11 @@ impl NatServer {
 												ncm_tx.write().await.send(Message::new_ssh(Some(tracing_id), bytes)).unwrap();
 											} else {
 												error!("SSH disconnected");
+												// 通知 Client, SSH disconnected
+												ncm_tx.write().await.send(Message::new_ssh_error(Some(tracing_id))).unwrap();
 												break;
 											}
 										},
-										// Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-										// },
 										Err(e) => {
 											error!("SSH disconnected: {}", e);
 											break;
@@ -299,12 +299,15 @@ impl NatServer {
 										Some(msg) => {
 											// Write to stream
 											if msg.ssh_status != Some(SSHStatus::Ok) {
-												error!("SSH disconnected");
+												error!("SSH of client have been disconnected");
 												conn.stream.shutdown().await.unwrap();
 												break;
 											} else {
+												info!("Try to send {} bytes to SSH connection", msg.body.len());
 												match conn.stream.try_write(&msg.body) {
-													Ok(_) => {}
+													Ok(n) => {
+														info!("Send {} bytes to SSH connection", n);
+													}
 													Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
 													Err(e) => {
 														error!("Write response to SSH stream failed: {:?}", e);
