@@ -15,6 +15,19 @@ curl -i -X POST localhost:5001 -d'{"Hello": "World!"}'
 
 ```
 
+## FAQ
+
+### 修改日志级别
+
+```bash
+
+# info,debug,error,warn
+export RUST_LOG=info
+
+./simple-nat-traversal <....>
+
+```
+
 ## Reference
 
 - [SSH Protocol – Secure Remote Login and File Transfer](https://www.ssh.com/academy/ssh/protocol)
