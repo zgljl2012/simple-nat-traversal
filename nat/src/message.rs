@@ -80,7 +80,7 @@ impl Message {
     }
 
     // 二进制协议 - NAT 通信协议
-    // 前 4 个字节表示消息的字节数，无符号 u32，即最多支持 2^32 次方的消息长度，即 4G
+    // 前 2 个字节表示消息的字节数，无符号 u16，即最多支持 2^16 次方的消息长度，即 64 KB
     // 第 5 个字节表示协议类型: NAT(0x0), HTTP(0x1), SSH(0x2)
     // 除 NAT 类型外，第 6-9 共 4 字节表示 tracing ID
 	// 对于 SSH 协议，第 10 个字节表示状态编码（0: 正常，1: 未知错误，2:...）
@@ -147,6 +147,9 @@ impl Message {
     // Write standard message to stream
     pub async fn write_to(&self, stream: &TcpStream) -> Result<(), Box<dyn std::error::Error>> {
         let size: u32 = self.body.len() as u32;
+		if size >= 2 ^ 16 {
+			return Err("Message too big".into())
+		}
         let size_arr = utils::u32_to_be(size);
 		// tracing_id
 		let tracing_id: Vec<u8> = match self.tracing_id {

@@ -13,6 +13,13 @@ pub fn as_u32_be(array: &[u8]) -> Result<u32, Box<dyn std::error::Error + Send +
     ((array[3] as u32) <<  0))
 }
 
+#[allow(unused)]
+pub fn u16_to_be(x: u16) -> [u8;2] {
+	let b1 : u8 = ((x >> 8) & 0xff) as u8;
+    let b2 : u8 = (x & 0xff) as u8;
+	return [b1, b2]
+}
+
 // u32 to big endian
 pub fn u32_to_be(x:u32) -> [u8;4] {
     let b1 : u8 = ((x >> 24) & 0xff) as u8;
