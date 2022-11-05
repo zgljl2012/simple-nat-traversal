@@ -29,6 +29,9 @@ impl NatClient {
 		let ssh_rx_reverse = Arc::new(RwLock::new(ssh_rx_reverse));
 		// Create tx and rx channel to send and receive message with remote server
 		let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+		let tx = Arc::new(RwLock::new(tx));
+		// Http message channel
+		let (http_tx, mut http_rx) = mpsc::unbounded_channel::<Message>();
 		// Send init message
 		stream.writable().await?;
         match stream.try_write("NAT 0.1".as_bytes()) {
@@ -45,7 +48,7 @@ impl NatClient {
 				_ = interval.tick() => {
 					// Send ping
 					debug!("Send PING to server");
-					tx.send(Message::ping()).unwrap();
+					tx.write().await.send(Message::ping()).unwrap();
 				},
 				// 从服务端接收请求
                 _ = stream.readable() => match Message::from_stream(&stream).await {
@@ -57,23 +60,8 @@ impl NatClient {
 						Some(msg) if msg.is_pong() => {
 							debug!("You received PONG from NAT server");
 						},
-						Some(msg) if msg.is_http() => match handle_http(&msg).await {
-							Ok(res) => {
-								// Send to server
-								tx.send(Message::new_http(msg.tracing_id, res.as_bytes().to_vec())).unwrap();
-							},
-							Err(e) => {
-								error!("Redirect http request failed: {:?}", e);
-								if e.source().is_some() {
-									if "operation timed out" == format!("{}", e.source().unwrap()) {
-										tx.send(Message::http_504(msg.tracing_id)).unwrap();
-									} else {
-										tx.send(Message::http_502(msg.tracing_id)).unwrap();
-									}
-								} else {
-									tx.send(Message::http_502(msg.tracing_id)).unwrap();
-								}
-							}
+						Some(msg) if msg.is_http() =>  {
+							http_tx.send(msg).unwrap();
 						},
 						// SSH 消息，且当前未创建本地 SSH
 						Some(msg) if msg.is_ssh() && !*ssh_existed.read().await => {
@@ -194,10 +182,11 @@ impl NatClient {
 							*ssh_existed.write().await = false; // 说明连接断开了
 						}
 						// Send to server
-						tx.send(msg).unwrap();
+						tx.write().await.send(msg).unwrap();
 					},
 					None => {}
 				},
+				// Read and send to server
                 msg = rx.recv() => match msg {
                     Some(msg) => {
                         // Send to server
@@ -211,7 +200,35 @@ impl NatClient {
 						}
                     },
                     None => {},
-                }
+                },
+				// Http request coming
+				msg = http_rx.recv() => match msg {
+					Some(msg) => {
+						let tx = tx.clone();
+						// Start a async task to handle this message
+						tokio::spawn(async move {
+							match handle_http(&msg).await {
+								Ok(res) => {
+									// Send to server
+									tx.write().await.send(Message::new_http(msg.tracing_id, res.as_bytes().to_vec())).unwrap();
+								},
+								Err(e) => {
+									error!("Redirect http request failed: {:?}", e);
+									if e.source().is_some() {
+										if "operation timed out" == format!("{}", e.source().unwrap()) {
+											tx.write().await.send(Message::http_504(msg.tracing_id)).unwrap();
+										} else {
+											tx.write().await.send(Message::http_502(msg.tracing_id)).unwrap();
+										}
+									} else {
+										tx.write().await.send(Message::http_502(msg.tracing_id)).unwrap();
+									}
+								}
+							}
+						});
+					},
+					None => {}
+				}
             };
         }
 		Ok(())

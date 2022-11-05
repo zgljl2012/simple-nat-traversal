@@ -74,7 +74,7 @@ impl HttpRequest {
     }
 }
 
-pub async fn handle_http(msg: &Message) -> Result<String, Box<dyn std::error::Error>> {
+pub async fn handle_http(msg: &Message) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
 	// 取出 Host
 	let text = std::str::from_utf8(msg.body.as_slice())
 		.unwrap()
@@ -91,11 +91,16 @@ pub async fn handle_http(msg: &Message) -> Result<String, Box<dyn std::error::Er
 
 	// Check the method
 	if !req.request_line.is_supported() {
-		return Err(format!("Don't support {:?} method now", req.request_line.method).into())
+		return Err(format!("Don't support {:?} method now", req.request_line.method).into());
 	}
 
 	// Create client with timeout
-	let client = ClientBuilder::new().timeout(Duration::from_secs(GATEWAY_TIMEOUT)).build()?;
+	let client = match ClientBuilder::new().timeout(Duration::from_secs(GATEWAY_TIMEOUT)).build() {
+		Ok(client) => client,
+		Err(err) => {
+			return Err(Box::new(err));
+		}
+	};
 	// 转发给指定的 Host
 	let mut request = client.get(req.request_line.url.clone());
 	// Support post
@@ -106,7 +111,12 @@ pub async fn handle_http(msg: &Message) -> Result<String, Box<dyn std::error::Er
 			.header("Content-Type", "application/json")
 			.body(format!("{:?}", data));
 	}
-	let body = request.send().await?;
+	let body = match request.send().await {
+		Ok(json) => json,
+		Err(err) => {
+			return Err(format!("Request send failed: {:?}", err).into());
+		}
+	};
 	
 	let mut res_text = String::new();
 	res_text += &format!("{:?} {:?}\r\n", body.version(), body.status().as_u16());
@@ -124,7 +134,12 @@ pub async fn handle_http(msg: &Message) -> Result<String, Box<dyn std::error::Er
 			v
 		)
 	}
-	let text = body.text().await?;
+	let text = match body.text().await {
+		Ok(text) => text,
+		Err(err) => {
+			return Err(Box::new(err));
+		}
+	};
 	res_text += &format!("\r\n{}{} \r\n", specify, text);
 	debug!("{}", res_text);
 	Ok(res_text)
