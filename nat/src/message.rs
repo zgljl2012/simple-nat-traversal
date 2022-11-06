@@ -32,13 +32,13 @@ pub struct Message {
 	pub ssh_status: Option<SSHStatus>,
 }
 
-const PING_BYTES: u8 = 0x0;
-const PONG_BYTES: u8 = 0x1;
-const NAT_OK: u8 = 0x2;
-const NAT_REJEXT: u8 = 0x3;
-const NAT_AUTH: u8 = 0x4;
-const NAT_AUTH_TIMEOUT: u8 = 0x5; // NAT auth timeout
-const NAT_AUTH_FAILED: u8 = 0x6; // NAT auth failed
+const PING_BYTES: u8 = 0x1;
+const PONG_BYTES: u8 = 0x2;
+const NAT_OK: u8 = 0x3;
+const NAT_REJEXT: u8 = 0x4;
+const NAT_AUTH: u8 = 0x5;
+const NAT_AUTH_TIMEOUT: u8 = 0x6; // NAT auth timeout
+const NAT_AUTH_FAILED: u8 = 0x7; // NAT auth failed
 
 impl Message {
     pub fn new_http(tracing_id: Option<u32>, body: Vec<u8>) -> Self {

@@ -258,13 +258,10 @@ impl NatServer {
 												let _ = client_reply_tx.write().await.send(msg);
 											},
 											Some(msg) => {
-												debug!("Received {:?} {:?}", msg.protocol, msg.body[4]);
+												debug!("Received {:?} {:?}", msg.protocol, msg.body);
 											}
 											None => {}
 										},
-										// Err(err) if format!("{}", err).contains("Uncognizaed protocol type") => {
-										// 	warn!("Received {:?}, this a error packet, discard it", err);
-										// },
 										Err(err) => {
 											error!("{}", err);
 											cc_failed_tx.send(true).unwrap();
