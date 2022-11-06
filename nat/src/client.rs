@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use log::{debug, error, info, warn};
 use tokio::{sync::{RwLock, mpsc::{self}}, net::TcpStream, time, select, io::AsyncWriteExt};
 
-use crate::{Message, http::handle_http, utils, SSHStatus, Context};
+use crate::{Message, http::handle_http, utils, SSHStatus, Context, crypto};
 
 // Client protocol
 pub struct NatClient {
@@ -56,6 +56,27 @@ impl NatClient {
 				// 从服务端接收请求
                 _ = stream.readable() => match Message::from_stream(&self.ctx, &stream).await {
 					Ok(msg) => match msg {
+						Some(msg) if msg.is_ok() => {
+							info!("Received OK from server, prepare to encrypted the random bytes");
+							let bytes = match msg.get_random_bytes_from_server() {
+								Ok(bytes) => bytes,
+								Err(_) => {
+									return Err("Server don't send random bytes".into());
+								}
+							};
+							let encrypted = crypto::encrypt(self.ctx.get_secret(), bytes.to_vec());
+							tx.write().await.send(Message::nat_auth(encrypted)).unwrap();
+						},
+						Some(msg) if msg.is_auth_timeout() => {
+							error!("Auth timeout");
+							let _ = stream.shutdown().await;
+							return Err("Auth timeout".into());
+						},
+						Some(msg) if msg.is_auth_failed() => {
+							error!("Auth failed");
+							let _ = stream.shutdown().await;
+							return Err("Auth failed".into());
+						},
 						Some(msg) if msg.is_rejected() => {
 							error!("Server reject us");
 							let _ = stream.shutdown().await;
@@ -170,7 +191,10 @@ impl NatClient {
 							// 将消息发送给 SSH thread
 							ssh_tx_reverse.send(msg).unwrap();
 						},
-						Some(_) => {},
+						Some(_) => {
+							let _ = stream.shutdown().await;
+							return Err("Unknown message, maybe your password incorrect, closed connection".into());
+						},
 						None => {}
 					},
 					Err(err) => {

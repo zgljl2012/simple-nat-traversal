@@ -1,9 +1,9 @@
-use std::{sync::Arc, collections::HashMap};
+use std::{sync::Arc, collections::HashMap, time::Duration};
 
 use log::{debug, info, error, warn};
-use tokio::{sync::{RwLock, mpsc::{UnboundedSender, UnboundedReceiver, self}}, select, net::{TcpStream, TcpListener}, io::{AsyncReadExt, AsyncWriteExt}};
+use tokio::{sync::{RwLock, mpsc::{UnboundedSender, UnboundedReceiver, self}}, select, net::{TcpStream, TcpListener}, io::{AsyncReadExt, AsyncWriteExt}, time};
 
-use crate::{Message, parse_protocol, utils::get_packet_from_stream, SSHStatus, Context};
+use crate::{Message, parse_protocol, utils::{get_packet_from_stream, self}, SSHStatus, Context, crypto};
 
 #[derive(Debug)]
 struct Connection {
@@ -134,7 +134,7 @@ impl NatServer {
 		let (ssh_disconnected_tx, mut ssh_disconnected_rx) = mpsc::unbounded_channel::<u32>();
 		let ssh_disconnected_tx = Arc::new(RwLock::new(ssh_disconnected_tx));
 		let batch_size = self.ctx.get_ssh_mtu();
-        loop {
+		loop {
             select! {
 				// Socket comming
 				socket = listener.accept() => match socket {
@@ -160,16 +160,19 @@ impl NatServer {
 						// shutdown the connect with anther client
 						let _ = stream.shutdown().await;
 					},
-					Some(stream) => {
-						// 开始握手连接, 发送 OK
-						match Message::nat_ok().write_to(&self.ctx, &stream).await {
+					Some(mut stream) => {
+						// 开始握手连接, 发送 OK，以及生成一个随机数，等待 Client 加密进行认证认证
+						// Client 需要对此随机数进行加密，服务端将密文解密后进行对比，若相同，则认证通过
+						let random_bytes_for_clinet = utils::random_bytes();
+						match Message::nat_ok(random_bytes_for_clinet).write_to(&self.ctx, &stream).await {
 							Ok(_) => {
-								debug!("Send reply to client successfully");
+								debug!("Send OK message to client successfully");
 							}
 							Err(e) => {
 								return Err(format!("Send reply to client failed: {:?}", e).into());
 							}
 						};
+						// Nat client
 						self.nat_client_cnt += 1;
 						// 此时，已连接 nat client，则开始在异步中循环处理此异步
 						let ncm_rx = ncm_rx.clone();
@@ -180,8 +183,25 @@ impl NatServer {
 						tokio::spawn(async move {
 							let mut ncm_rx = ncm_rx.write().await;
 							let cc_failed_tx = cc_failed_tx.write().await;
+							// 超时未认证，则关闭连接
+							let (timeout_tx, mut timeout_rx) = mpsc::unbounded_channel::<bool>();
+							tokio::spawn(async move {
+								time::sleep(Duration::from_secs(5)).await;
+								timeout_tx.send(true).unwrap();
+							});
+							let mut auth_success = false;
 							loop {
 								select! {
+									_ = timeout_rx.recv() => {
+										if auth_success {
+											continue;
+										}
+										error!("Nat client auth timeout");
+										let _ = Message::nat_auth_timeout().write_to(&ctx, &stream).await;
+										let _ = stream.shutdown();
+										cc_failed_tx.send(true).unwrap();
+										return;
+									},
 									// 读取消息，发送给 Client
 									msg = ncm_rx.recv() => match msg {
 										Some(msg) => match msg.write_to(&ctx, &stream).await {
@@ -200,6 +220,30 @@ impl NatServer {
 									// 从 Client 读取消息
 									_ = stream.readable() => match Message::from_stream(&ctx, &stream).await {
 										Ok(msg) => match msg {
+											Some(msg) if msg.is_auth() => {
+												let secret = match msg.get_encrypted_bytes_by_client() {
+													Ok(bytes) => bytes,
+													Err(e) => {
+														error!("Read auth message from client failed: {}", e);
+														// Close the connection
+														let _ = Message::nat_auth_failed().write_to(&ctx, &stream).await;
+														let _ = stream.shutdown();
+														cc_failed_tx.send(true).unwrap();
+														break;
+													}
+												};
+												// decrypt it
+												let decrypted = crypto::decrypt(ctx.get_secret(), secret.to_vec());
+												if utils::as_u32_be(&random_bytes_for_clinet).unwrap() == utils::as_u32_be(&decrypted).unwrap() {
+													info!("Client auth successfully");
+													auth_success = true;
+												} else {
+													let _ = Message::nat_auth_failed().write_to(&ctx, &stream).await;
+													let _ = stream.shutdown();
+													cc_failed_tx.send(true).unwrap();
+													break;
+												}
+											},
 											Some(msg) if msg.is_ping() => {
 												// 如果收到 Ping，就直接 Pong
 												debug!("You received PING from NAT client");
@@ -214,7 +258,7 @@ impl NatServer {
 												let _ = client_reply_tx.write().await.send(msg);
 											},
 											Some(msg) => {
-												debug!("Received {:?}", msg.protocol);
+												debug!("Received {:?} {:?}", msg.protocol, msg.body[4]);
 											}
 											None => {}
 										},

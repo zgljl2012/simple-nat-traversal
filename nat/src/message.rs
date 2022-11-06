@@ -32,10 +32,13 @@ pub struct Message {
 	pub ssh_status: Option<SSHStatus>,
 }
 
-const PING_BYTES: [u8; 1] = [0x0];
-const PONG_BYTES: [u8; 1] = [0x1];
-const NAT_OK: [u8; 1] = [0x2];
-const NAT_REJEXT: [u8; 1] = [0x3];
+const PING_BYTES: u8 = 0x0;
+const PONG_BYTES: u8 = 0x1;
+const NAT_OK: u8 = 0x2;
+const NAT_REJEXT: u8 = 0x3;
+const NAT_AUTH: u8 = 0x4;
+const NAT_AUTH_TIMEOUT: u8 = 0x5; // NAT auth timeout
+const NAT_AUTH_FAILED: u8 = 0x6; // NAT auth failed
 
 impl Message {
     pub fn new_http(tracing_id: Option<u32>, body: Vec<u8>) -> Self {
@@ -79,13 +82,17 @@ impl Message {
         }
     }
 
-    // 二进制协议 - NAT 通信协议
-	// 具体消息先 AES 加密（因 SSH 本身就是加密流量，故不加密 SSH 消息），消息头不加密
-    // 前 2 个字节表示加密后的消息的字节数，无符号 u16，即最多支持 2^16 次方的消息长度，即 64 KB
-	// 3、4 字节表示消息的 Checksum
-    // 第 5 个字节表示协议类型: NAT(0x0), HTTP(0x1), SSH(0x2)
-    // 除 NAT 类型外，第 6-9 共 4 字节表示 tracing ID
-	// 对于 SSH 协议，第 10 个字节表示状态编码（0: 正常，1: 未知错误，2:...）
+    /// 二进制协议 - NAT 通信协议
+	/// 
+	/// 具体消息先 AES 加密（因 SSH 本身就是加密流量，故不加密 SSH 消息），消息头不加密
+	/// 
+    /// 1. 前 2 个字节表示加密后的消息的字节数，无符号 u16，即最多支持 2^16 次方的消息长度，即 64 KB
+	/// 2. 3、4 字节表示消息的 Checksum
+    /// 3. 第 5 个字节表示协议类型: NAT(0x0), HTTP(0x1), SSH(0x2)
+    /// 4. 除 NAT 类型外，第 6-9 共 4 字节表示 tracing ID
+	/// 5. 对于 SSH 类型，第 10 个字节表示状态编码（0: 正常，1: 未知错误，2:...）
+	/// 6. 对于 NAT 类型，第 6 字节表示具体指令（PING，PONG, OK, AUTH, REJECT）
+	/// 7. 对于 NAT-OK/AUTH 指令，第 7-11 字节为四字节，OK 附带随机数，client 需对随机数加密，使用 AUTH 指令附带密文返回
     pub async fn from_stream(
 		ctx: &Context,
         stream: &TcpStream,
@@ -96,8 +103,7 @@ impl Message {
         match stream.try_read(&mut buffer) {
             Ok(0) => Err("Connection closed".into()),
             Ok(_) => {
-				debug!("Message received");
-                let data_size = match utils::as_u16_be(buffer.as_slice()) {
+				let data_size = match utils::as_u16_be(buffer.as_slice()) {
 					Ok(size) => size,
 					Err(err) => {
 						return Err(format!("Parse data size failed: {}", err).into());
@@ -190,7 +196,7 @@ impl Message {
     }
 
     // Write standard message to stream
-    pub async fn write_to(&self, ctx: &Context, stream: &TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn write_to(&self, ctx: &Context, stream: &TcpStream) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 		// Encrypt message
 		let mut encrypted = self.body.clone();
 		if self.protocol != ProtocolType::SSH {
@@ -236,7 +242,7 @@ impl Message {
         stream.writable().await.unwrap();
         match stream.try_write(&r.as_slice()) {
 			Ok(_) => {
-				debug!("write message successfully");
+				debug!("write message successfully: {}, {} bytes", self.protocol, r.len());
 				return Ok(());
 			},
 			Err(e) => {
@@ -254,31 +260,93 @@ impl Message {
 	}
 
     pub fn is_ping(&self) -> bool {
-        self.protocol == ProtocolType::NAT && self.body == PING_BYTES
+        self.is_nat_cmd(PING_BYTES)
+    }
+
+	pub fn is_auth_timeout(&self) -> bool {
+        self.is_nat_cmd(NAT_AUTH_TIMEOUT)
+    }
+
+	pub fn is_auth_failed(&self) -> bool {
+        self.is_nat_cmd(NAT_AUTH_FAILED)
     }
 
     pub fn is_pong(&self) -> bool {
-        self.protocol == ProtocolType::NAT && self.body == PONG_BYTES
+        self.is_nat_cmd(PONG_BYTES)
     }
 
 	pub fn is_rejected(&self) -> bool {
-		self.protocol == ProtocolType::NAT && self.body == NAT_REJEXT
+		self.is_nat_cmd(NAT_REJEXT)
+	}
+
+	pub fn is_ok(&self) -> bool {
+		self.is_nat_cmd(NAT_OK)
+	}
+
+	fn is_nat_cmd(&self, cmd: u8) -> bool {
+		self.protocol == ProtocolType::NAT && self.body.len() > 0 && self.body[0] == cmd
+	}
+
+	pub fn is_auth(&self) -> bool {
+		self.is_nat_cmd(NAT_AUTH)
 	}
 
     pub fn ping() -> Self {
-        Self{protocol: ProtocolType::NAT, body: PING_BYTES.to_vec(), tracing_id: None, ssh_status: None,}
+        Self{protocol: ProtocolType::NAT, body: vec![PING_BYTES], tracing_id: None, ssh_status: None,}
     }
 
     pub fn pong() -> Self {
-        Self{protocol: ProtocolType::NAT, body: PONG_BYTES.to_vec(), tracing_id: None, ssh_status: None,}
+        Self{protocol: ProtocolType::NAT, body: vec![PONG_BYTES], tracing_id: None, ssh_status: None,}
     }
 
-	pub fn nat_ok() -> Self {
-		Self{protocol: ProtocolType::NAT, body: NAT_OK.to_vec(), tracing_id: None, ssh_status: None,}	
+	pub fn nat_ok(random: [u8; 4]) -> Self {
+		let body = vec![vec![NAT_OK], random.to_vec()].concat();
+		Self{protocol: ProtocolType::NAT, body, tracing_id: None, ssh_status: None,}	
+	}
+
+	pub fn nat_auth_timeout() -> Self {
+        Self{protocol: ProtocolType::NAT, body: vec![NAT_AUTH_TIMEOUT], tracing_id: None, ssh_status: None,}
+    }
+
+	pub fn nat_auth_failed() -> Self {
+        Self{protocol: ProtocolType::NAT, body: vec![NAT_AUTH_FAILED], tracing_id: None, ssh_status: None,}
+    }
+
+	fn get_4_bytes(&self, start: usize) -> Result<[u8; 4], Box<dyn std::error::Error + Send + Sync>> {
+		if self.body.len() < (start + 4) {
+			return Err("The body is too short".into());
+		}
+		let bytes = self.body[start..start + 4].to_vec();
+		let bytes: [u8; 4] = [bytes[0], bytes[1], bytes[2], bytes[3]];
+		Ok(bytes)
+	}
+
+	// 第 7-11 字节
+	pub fn get_random_bytes_from_server(&self) -> Result<[u8; 4], Box<dyn std::error::Error + Send + Sync>> {
+		if !self.is_ok() {
+			return Err("This message is not OK message from server".into())
+		}
+		Ok(self.get_4_bytes(1)?)
+	}
+
+	// 因为此处获取的是加密后的数据，因 AES 分组原因，会有 16 字节
+	pub fn get_encrypted_bytes_by_client(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+		if !self.is_auth() {
+			return Err("This message is not AUTH message from client".into())
+		}
+		if self.body.len() < (1 + 16) {
+			return Err("The body is too short".into());
+		}
+		Ok(self.body[1..1 + 16].to_vec())
+	}
+
+	pub fn nat_auth(encrypted: Vec<u8>) -> Self {
+		// 因密文分组，故密文会有 16 字节
+		Self{protocol: ProtocolType::NAT, body: vec![vec![NAT_AUTH], encrypted].concat(), tracing_id: None, ssh_status: None,}	
 	}
 
 	pub fn nat_reject() -> Self {
-		Self{protocol: ProtocolType::NAT, body: NAT_REJEXT.to_vec(), tracing_id: None, ssh_status: None,}	
+		Self{protocol: ProtocolType::NAT, body: vec![NAT_REJEXT], tracing_id: None, ssh_status: None,}	
 	}
 
 	pub fn to_utf8(&self) -> &str {

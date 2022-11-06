@@ -1,6 +1,6 @@
 use log::{error, debug};
 use tokio::net::TcpStream;
-
+use rand::Rng;
 
 // 大端序(Big endian)，字节转 u32
 pub fn as_u32_be(array: &[u8]) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
@@ -56,6 +56,10 @@ pub fn get_packet_from_stream(stream: &TcpStream) -> Vec<u8> {
 	}
 	debug!("packet size: {:?}", bytes.len());
 	bytes
+}
+
+pub fn random_bytes() -> [u8;4] {
+	u32_to_be(rand::thread_rng().gen::<u32>())
 }
 
 #[cfg(test)]

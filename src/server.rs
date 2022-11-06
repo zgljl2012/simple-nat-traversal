@@ -15,7 +15,6 @@ pub async fn start_server(config: &ServerConfig) -> Result<(), Box<dyn std::erro
         config.port
     );
 	let ctx = Context::new(config.password.clone(), config.ssh_mtu)?;
-	log::info!("--->>>>{:x?}", ctx.get_secret());
-    // Start listening
+	// Start listening
 	NatServer::new(ctx).run_forever(format!("{}:{:?}", config.host, config.port).as_str()).await
 }
