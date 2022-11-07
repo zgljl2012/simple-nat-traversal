@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use log::{debug, error, info, warn};
 use tokio::{sync::{RwLock, mpsc::{self}}, net::TcpStream, time, select, io::AsyncWriteExt};
 
-use crate::{Message, http::{handle_http}, utils, SSHStatus, Context, crypto};
+use crate::{Message, http::{handle_http}, utils, SSHStatus, Context, crypto, cache};
 
 // Client protocol
 pub struct NatClient {
@@ -45,6 +45,8 @@ impl NatClient {
 		// Create ping timer
 		let mut interval = time::interval(Duration::from_secs(5));
 		let batch_size: usize = self.ctx.get_ssh_mtu();
+		// 缓存没有读完的 http response
+		let http_cache: Arc<RwLock<cache::Cache<u32, Message>>> = Arc::new(RwLock::new(cache::Cache::new(Duration::from_secs(10))));
 		loop {
             select! {
 				// PING interval
@@ -52,6 +54,8 @@ impl NatClient {
 					// Send ping
 					debug!("Send PING to server");
 					tx.write().await.send(Message::ping()).unwrap();
+					// clear cache
+					http_cache.write().await.compact().await;
 				},
 				// 从服务端接收请求
                 _ = stream.readable() => match Message::from_stream(&self.ctx, &stream).await {
@@ -233,6 +237,23 @@ impl NatClient {
 					Some(msg) => {
 						let tx = tx.clone();
 						let ctx = self.ctx.clone();
+						// 分包读取 http request
+						let tracing_id = msg.tracing_id.unwrap_or(0);
+						let packet_size = msg.packet_size.unwrap_or(msg.body.len() as u32);
+						let mut msg = msg.clone();
+						if http_cache.read().await.contains_key(&tracing_id) || packet_size > msg.body.len() as u32 {
+							// 需要分包读取
+							let mut cached = http_cache.read().await.get(&tracing_id).unwrap_or(Message::new_http(Some(tracing_id), vec![], packet_size));
+							cached.body = vec![cached.body, msg.body.clone()].concat();
+							if packet_size <= cached.body.len() as u32 {
+								// 清理缓存
+								http_cache.write().await.remove(&tracing_id);
+								msg = cached;
+							} else {
+								http_cache.write().await.put(tracing_id, cached);
+								continue;
+							}
+						}
 						// Start a async task to handle this message
 						tokio::spawn(async move {
 							match handle_http(&msg).await {

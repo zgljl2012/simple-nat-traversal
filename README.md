@@ -32,7 +32,7 @@ export RUST_LOG=info
 
 ```bash
 
-curl -d @fixtures/text.txt localhost:28000
+curl -d @fixtures/text.txt localhost:5001
 
 ```
 

@@ -136,8 +136,14 @@ impl NatServer {
 		let batch_size = self.ctx.get_ssh_mtu();
 		// 缓存没有读完的 http response
 		let http_cache: Arc<RwLock<cache::Cache<u32, Message>>> = Arc::new(RwLock::new(cache::Cache::new(Duration::from_secs(10))));
+		let mut interval = time::interval(Duration::from_secs(5));
 		loop {
             select! {
+				_ = interval.tick() => {
+					// clear cache
+					debug!("Clear cache");
+					http_cache.write().await.compact().await;
+				},
 				// Socket comming
 				socket = listener.accept() => match socket {
 					Ok((stream, _)) => {
@@ -309,9 +315,15 @@ impl NatServer {
 						let bytes = get_packets(&conn);
 						self.tracing_seq += 1;
 						let bytes_len = bytes.len() as u32;
-						let msg = Message::new_http(Some(self.tracing_seq), bytes, bytes_len);
+						let mut i: usize = 0;
+						let batch_size = self.ctx.get_http_mtu() as usize;
 						connections.insert(self.tracing_seq, conn.stream);
-						ncm_tx.write().await.send(msg).unwrap();
+						while i < bytes_len as usize {
+							let end = std::cmp::min(i + batch_size, bytes_len as usize);
+							let msg = Message::new_http(Some(self.tracing_seq), bytes[i..end].to_vec(), bytes_len);						
+							ncm_tx.write().await.send(msg).unwrap();
+							i += batch_size;
+						}
 					},
 					None => {
 						error!("Http client stream from channel is none");

@@ -100,7 +100,7 @@ impl Message {
 	/// 6. 对于 NAT 类型，第 6 字节表示具体指令（PING，PONG, OK, AUTH, REJECT）
 	/// 7. 对于 NAT-OK 指令，7-10 为随机数
 	/// 8. 对于 NAT-AUTH 指令，第 7-22 字节为密文字节，client 需对随机数加密，使用 AUTH 指令附带密文返回
-	/// 9. 为了实现 HTTP 的分包，需要提高 HTTP 的报文总大小，第 10-13 字节表示报文总长度，以支持 Http 请求和响应的分包
+	/// 9. 为了实现 HTTP 的分包，需要提供 HTTP 的总报文大小，使用第 10-13 字节表示此大小
     pub async fn from_stream(
 		ctx: &Context,
         stream: &TcpStream,
