@@ -3,7 +3,7 @@ use std::{sync::Arc, collections::HashMap, time::Duration};
 use log::{debug, info, error, warn};
 use tokio::{sync::{RwLock, mpsc::{UnboundedSender, UnboundedReceiver, self}}, select, net::{TcpStream, TcpListener}, io::{AsyncReadExt, AsyncWriteExt}, time};
 
-use crate::{Message, parse_protocol, utils::{get_packet_from_stream, self}, SSHStatus, Context, crypto, http};
+use crate::{Message, parse_protocol, utils::{get_packet_from_stream, self}, SSHStatus, Context, crypto, cache};
 
 #[derive(Debug)]
 struct Connection {
@@ -134,6 +134,8 @@ impl NatServer {
 		let (ssh_disconnected_tx, mut ssh_disconnected_rx) = mpsc::unbounded_channel::<u32>();
 		let ssh_disconnected_tx = Arc::new(RwLock::new(ssh_disconnected_tx));
 		let batch_size = self.ctx.get_ssh_mtu();
+		// 缓存没有读完的 http response
+		let http_cache: Arc<RwLock<cache::Cache<u32, Message>>> = Arc::new(RwLock::new(cache::Cache::new(Duration::from_secs(10))));
 		loop {
             select! {
 				// Socket comming
@@ -180,6 +182,7 @@ impl NatServer {
 						let cc_failed_tx = cc_failed_tx.clone();
 						let ncm_tx = ncm_tx.clone();
 						let ctx = self.ctx.clone();
+						let http_cache = http_cache.clone();
 						tokio::spawn(async move {
 							let mut ncm_rx = ncm_rx.write().await;
 							let cc_failed_tx = cc_failed_tx.write().await;
@@ -252,8 +255,24 @@ impl NatServer {
 											},
 											Some(msg) if msg.is_http() => {
 												debug!("Received HTTP Response from client");
-												// 根据 content-length，进行分包读取
-												let _ = client_reply_tx.write().await.send(msg);
+												// 根据 packet_size，进行分包读取
+												let packet_size = msg.packet_size.unwrap_or(msg.body.len() as u32);
+												let tracing_id = msg.tracing_id.unwrap_or(0);
+												if http_cache.read().await.contains_key(&tracing_id) || packet_size > msg.body.len() as u32 {
+													// 需要分包读取
+													let mut cached = http_cache.read().await.get(&tracing_id).unwrap_or(Message::new_http(Some(tracing_id), vec![], packet_size));
+													cached.body = vec![cached.body, msg.body.clone()].concat();
+													if packet_size <= cached.body.len() as u32 {
+														// 清理缓存
+														http_cache.write().await.remove(&tracing_id);
+														// 发送真正的 Message
+														let _ = client_reply_tx.write().await.send(cached);
+													} else {
+														http_cache.write().await.put(tracing_id, cached);
+													}
+												} else {
+													let _ = client_reply_tx.write().await.send(msg);
+												}
 											},
 											Some(msg) if msg.is_ssh() => {
 												info!("Received SSH Response from client");
@@ -289,8 +308,8 @@ impl NatServer {
 						// 组装 http 数据，发送给 Nat Client message channel
 						let bytes = get_packets(&conn);
 						self.tracing_seq += 1;
-						let request = http::HttpRequest::from(bytes.as_slice());
-						let msg = Message::new_http(Some(self.tracing_seq), bytes, request.content_length);
+						let bytes_len = bytes.len() as u32;
+						let msg = Message::new_http(Some(self.tracing_seq), bytes, bytes_len);
 						connections.insert(self.tracing_seq, conn.stream);
 						ncm_tx.write().await.send(msg).unwrap();
 					},

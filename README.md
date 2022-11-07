@@ -28,6 +28,14 @@ export RUST_LOG=info
 
 ```
 
+### 使用 curl POST 文件
+
+```bash
+
+curl -d @fixtures/text.txt localhost:28000
+
+```
+
 ## Reference
 
 - [SSH Protocol – Secure Remote Login and File Transfer](https://www.ssh.com/academy/ssh/protocol)

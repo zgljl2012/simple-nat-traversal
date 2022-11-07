@@ -30,7 +30,7 @@ pub struct Message {
     pub body: Vec<u8>,
 	pub tracing_id: Option<u32>,
 	pub ssh_status: Option<SSHStatus>,
-	pub content_length: Option<u32>,
+	pub packet_size: Option<u32>,
 }
 
 const PING_BYTES: u8 = 0x1;
@@ -42,13 +42,13 @@ const NAT_AUTH_TIMEOUT: u8 = 0x6; // NAT auth timeout
 const NAT_AUTH_FAILED: u8 = 0x7; // NAT auth failed
 
 impl Message {
-    pub fn new_http(tracing_id: Option<u32>, body: Vec<u8>, content_type: u32) -> Self {
+    pub fn new_http(tracing_id: Option<u32>, body: Vec<u8>, packet_size: u32) -> Self {
         Self {
             protocol: ProtocolType::HTTP,
             body,
 			tracing_id: tracing_id,
 			ssh_status: None,
-			content_length: Some(content_type),
+			packet_size: Some(packet_size),
         }
     }
 	pub fn new_ssh(tracing_id: Option<u32>, body: Vec<u8>) -> Self {
@@ -57,7 +57,7 @@ impl Message {
 			body,
 			tracing_id: tracing_id,
 			ssh_status: Some(SSHStatus::Ok),
-			content_length: None,
+			packet_size: None,
 		}
 	}
 	pub fn new_ssh_error(tracing_id: Option<u32>) -> Self {
@@ -66,7 +66,7 @@ impl Message {
 			body: vec![],
 			tracing_id: tracing_id,
 			ssh_status: Some(SSHStatus::UnknownError),
-			content_length: None,
+			packet_size: None,
 		}
 	}
     pub fn http_502(tracing_id: Option<u32>) -> Self {
@@ -75,7 +75,7 @@ impl Message {
             body: "HTTP/1.1 502 Bad Gateway\r\n".as_bytes().to_vec(),
 			tracing_id: tracing_id,
 			ssh_status: None,
-			content_length: Some(0),
+			packet_size: Some(0),
         }
     }
     pub fn http_504(tracing_id: Option<u32>) -> Self {
@@ -84,7 +84,7 @@ impl Message {
             body: "HTTP/1.1 504 Bad Timeout\r\n".as_bytes().to_vec(),
 			tracing_id: tracing_id,
 			ssh_status: None,
-			content_length: Some(0),
+			packet_size: Some(0),
         }
     }
 
@@ -100,7 +100,7 @@ impl Message {
 	/// 6. 对于 NAT 类型，第 6 字节表示具体指令（PING，PONG, OK, AUTH, REJECT）
 	/// 7. 对于 NAT-OK 指令，7-10 为随机数
 	/// 8. 对于 NAT-AUTH 指令，第 7-22 字节为密文字节，client 需对随机数加密，使用 AUTH 指令附带密文返回
-	/// 9. 为了防止重复 HTTP 解析，对于 HTTP 类型，第 10-13 字节表示 content-length 长度，以支持 Http 请求和响应的分包，对于无 Body 请求，设置为 0
+	/// 9. 为了实现 HTTP 的分包，需要提高 HTTP 的报文总大小，第 10-13 字节表示报文总长度，以支持 Http 请求和响应的分包
     pub async fn from_stream(
 		ctx: &Context,
         stream: &TcpStream,
@@ -159,12 +159,12 @@ impl Message {
 				}
 
 				// If http, read the content length
-				let mut content_length: Option<u32> = None;
+				let mut packet_size: Option<u32> = None;
 				if protocol_type == ProtocolType::HTTP {
 					let mut cl = [0;4];
 					stream.try_read(&mut cl).unwrap();
 					bytes.append(&mut cl.clone().to_vec());
-					content_length = Some(utils::as_u32_be(&cl)?);
+					packet_size = Some(utils::as_u32_be(&cl)?);
 				}
 
                 // Read other bytes
@@ -205,7 +205,7 @@ impl Message {
                     body: decrypted,
 					tracing_id,
 					ssh_status,
-					content_length,
+					packet_size,
                 }))
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
@@ -244,8 +244,8 @@ impl Message {
 			},
 		};
 		// content length for HTTP connection
-		let content_length: Vec<u8> = match &self.content_length {
-			Some(content_length) => utils::u32_to_be(content_length.clone()).to_vec(),
+		let packet_size: Vec<u8> = match &self.packet_size {
+			Some(packet_size) => utils::u32_to_be(packet_size.clone()).to_vec(),
 			None => vec![]
 		};
         let mut r: Vec<u8> = [
@@ -254,7 +254,7 @@ impl Message {
             self.protocol.bytes().to_vec().as_slice(),
 			tracing_id.as_slice(),
 			ssh_status.as_slice(),
-			content_length.as_slice(),
+			packet_size.as_slice(),
             encrypted.as_slice(),
         ]
         .concat();
@@ -316,7 +316,7 @@ impl Message {
 	}
 
 	fn nat_cmd(cmd: u8) -> Self {
-		Self{protocol: ProtocolType::NAT, body: vec![cmd], tracing_id: None, ssh_status: None,content_length: None,}
+		Self{protocol: ProtocolType::NAT, body: vec![cmd], tracing_id: None, ssh_status: None,packet_size: None,}
 	}
 
     pub fn ping() -> Self {
@@ -329,7 +329,7 @@ impl Message {
 
 	pub fn nat_ok(random: [u8; 4]) -> Self {
 		let body = vec![vec![NAT_OK], random.to_vec()].concat();
-		Self{protocol: ProtocolType::NAT, body, tracing_id: None, ssh_status: None,content_length: None}	
+		Self{protocol: ProtocolType::NAT, body, tracing_id: None, ssh_status: None,packet_size: None}	
 	}
 
 	pub fn nat_auth_timeout() -> Self {
@@ -370,7 +370,7 @@ impl Message {
 
 	pub fn nat_auth(encrypted: Vec<u8>) -> Self {
 		// 因密文分组，故密文会有 16 字节
-		Self{protocol: ProtocolType::NAT, body: vec![vec![NAT_AUTH], encrypted].concat(), tracing_id: None, ssh_status: None,content_length: None}	
+		Self{protocol: ProtocolType::NAT, body: vec![vec![NAT_AUTH], encrypted].concat(), tracing_id: None, ssh_status: None,packet_size: None}	
 	}
 
 	pub fn nat_reject() -> Self {
