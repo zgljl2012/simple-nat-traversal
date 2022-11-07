@@ -234,6 +234,7 @@ impl NatServer {
 												};
 												// decrypt it
 												let decrypted = crypto::decrypt(ctx.get_secret(), secret.to_vec());
+												// 验证是否解密正确
 												if utils::as_u32_be(&random_bytes_for_clinet).unwrap() == utils::as_u32_be(&decrypted).unwrap() {
 													info!("Client auth successfully");
 													auth_success = true;
@@ -251,6 +252,7 @@ impl NatServer {
 											},
 											Some(msg) if msg.is_http() => {
 												debug!("Received HTTP Response from client");
+												// 根据 content-length，进行分包读取
 												let _ = client_reply_tx.write().await.send(msg);
 											},
 											Some(msg) if msg.is_ssh() => {

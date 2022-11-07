@@ -30,6 +30,7 @@ pub struct Message {
     pub body: Vec<u8>,
 	pub tracing_id: Option<u32>,
 	pub ssh_status: Option<SSHStatus>,
+	pub content_length: Option<u32>,
 }
 
 const PING_BYTES: u8 = 0x1;
@@ -47,6 +48,7 @@ impl Message {
             body,
 			tracing_id: tracing_id,
 			ssh_status: None,
+			content_length: None,
         }
     }
 	pub fn new_ssh(tracing_id: Option<u32>, body: Vec<u8>) -> Self {
@@ -55,6 +57,7 @@ impl Message {
 			body,
 			tracing_id: tracing_id,
 			ssh_status: Some(SSHStatus::Ok),
+			content_length: None,
 		}
 	}
 	pub fn new_ssh_error(tracing_id: Option<u32>) -> Self {
@@ -63,6 +66,7 @@ impl Message {
 			body: vec![],
 			tracing_id: tracing_id,
 			ssh_status: Some(SSHStatus::UnknownError),
+			content_length: None,
 		}
 	}
     pub fn http_502(tracing_id: Option<u32>) -> Self {
@@ -71,6 +75,7 @@ impl Message {
             body: "HTTP/1.1 502 Bad Gateway\r\n".as_bytes().to_vec(),
 			tracing_id: tracing_id,
 			ssh_status: None,
+			content_length: None,
         }
     }
     pub fn http_504(tracing_id: Option<u32>) -> Self {
@@ -79,6 +84,7 @@ impl Message {
             body: "HTTP/1.1 504 Bad Timeout\r\n".as_bytes().to_vec(),
 			tracing_id: tracing_id,
 			ssh_status: None,
+			content_length: None,
         }
     }
 
@@ -92,7 +98,9 @@ impl Message {
     /// 4. 除 NAT 类型外，第 6-9 共 4 字节表示 tracing ID
 	/// 5. 对于 SSH 类型，第 10 个字节表示状态编码（0: 正常，1: 未知错误，2:...）
 	/// 6. 对于 NAT 类型，第 6 字节表示具体指令（PING，PONG, OK, AUTH, REJECT）
-	/// 7. 对于 NAT-OK/AUTH 指令，第 7-11 字节为四字节，OK 附带随机数，client 需对随机数加密，使用 AUTH 指令附带密文返回
+	/// 7. 对于 NAT-OK 指令，7-10 为随机数
+	/// 8. 对于 NAT-AUTH 指令，第 7-22 字节为密文字节，client 需对随机数加密，使用 AUTH 指令附带密文返回
+	/// 9. 为了防止重复 HTTP 解析，对于 HTTP 类型，第 10-13 字节表示 content-length 长度，以支持 Http 请求和响应的分包，对于无 Body 请求，设置为 0
     pub async fn from_stream(
 		ctx: &Context,
         stream: &TcpStream,
@@ -188,6 +196,7 @@ impl Message {
                     body: decrypted,
 					tracing_id,
 					ssh_status,
+					content_length: None,
                 }))
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
@@ -291,25 +300,29 @@ impl Message {
 		self.is_nat_cmd(NAT_AUTH)
 	}
 
+	fn nat_cmd(cmd: u8) -> Self {
+		Self{protocol: ProtocolType::NAT, body: vec![cmd], tracing_id: None, ssh_status: None,content_length: None,}
+	}
+
     pub fn ping() -> Self {
-        Self{protocol: ProtocolType::NAT, body: vec![PING_BYTES], tracing_id: None, ssh_status: None,}
+        Message::nat_cmd(PING_BYTES)
     }
 
     pub fn pong() -> Self {
-        Self{protocol: ProtocolType::NAT, body: vec![PONG_BYTES], tracing_id: None, ssh_status: None,}
+        Message::nat_cmd(PONG_BYTES)
     }
 
 	pub fn nat_ok(random: [u8; 4]) -> Self {
 		let body = vec![vec![NAT_OK], random.to_vec()].concat();
-		Self{protocol: ProtocolType::NAT, body, tracing_id: None, ssh_status: None,}	
+		Self{protocol: ProtocolType::NAT, body, tracing_id: None, ssh_status: None,content_length: None}	
 	}
 
 	pub fn nat_auth_timeout() -> Self {
-        Self{protocol: ProtocolType::NAT, body: vec![NAT_AUTH_TIMEOUT], tracing_id: None, ssh_status: None,}
+        Message::nat_cmd(NAT_AUTH_TIMEOUT)
     }
 
 	pub fn nat_auth_failed() -> Self {
-        Self{protocol: ProtocolType::NAT, body: vec![NAT_AUTH_FAILED], tracing_id: None, ssh_status: None,}
+        Message::nat_cmd(NAT_AUTH_FAILED)
     }
 
 	fn get_4_bytes(&self, start: usize) -> Result<[u8; 4], Box<dyn std::error::Error + Send + Sync>> {
@@ -342,11 +355,11 @@ impl Message {
 
 	pub fn nat_auth(encrypted: Vec<u8>) -> Self {
 		// 因密文分组，故密文会有 16 字节
-		Self{protocol: ProtocolType::NAT, body: vec![vec![NAT_AUTH], encrypted].concat(), tracing_id: None, ssh_status: None,}	
+		Self{protocol: ProtocolType::NAT, body: vec![vec![NAT_AUTH], encrypted].concat(), tracing_id: None, ssh_status: None,content_length: None}	
 	}
 
 	pub fn nat_reject() -> Self {
-		Self{protocol: ProtocolType::NAT, body: vec![NAT_REJEXT], tracing_id: None, ssh_status: None,}	
+		Message::nat_cmd(NAT_REJEXT)
 	}
 
 	pub fn to_utf8(&self) -> &str {

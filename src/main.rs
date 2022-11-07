@@ -15,6 +15,7 @@ fn cli() -> Command {
     let host_arg = arg!(-H - -host <HOST> "Specify a host to listen or connect to").required(false);
 	let password = arg!(-P - -password <PASSWORD> "Password of server").required(true);
 	let ssh_mtu = arg!(-M - -"ssh-mtu" <SSH_MTU> "MTU of the SSH packet per packet").required(false).value_parser(clap::value_parser!(u16).range(64..2048));
+	let http_mtu = arg!(--"http-mtu" <HTTP_MTU> "MTU of the HTTP packet per packet").required(false).value_parser(clap::value_parser!(u16).range(64..2048));
 	Command::new("Simple NAT Traversal")
         .about("NAT tool")
         .subcommand_required(true)
@@ -26,6 +27,7 @@ fn cli() -> Command {
                .arg(&host_arg)
 			   .arg(&password)
 			   .arg(&ssh_mtu)
+			   .arg(&http_mtu)
         )
         .subcommand(
             Command::new("client")
@@ -34,6 +36,7 @@ fn cli() -> Command {
                .arg(&host_arg)
 			   .arg(&password)
 			   .arg(&ssh_mtu)
+			   .arg(&http_mtu)
         )
 }
 
@@ -43,6 +46,10 @@ fn get_password(sub_matches: &ArgMatches) -> String {
 
 fn get_ssh_mtu(sub_matches: &ArgMatches) -> u16 {
 	sub_matches.get_one::<u16>("ssh-mtu").unwrap_or(&512).clone()
+}
+
+fn get_http_mtu(sub_matches: &ArgMatches) -> u16 {
+	sub_matches.get_one::<u16>("http-mtu").unwrap_or(&1024).clone()
 }
 
 #[tokio::main]
@@ -65,7 +72,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 port: p,
                 host: h,
 				password: get_password(&sub_matches),
-				ssh_mtu: get_ssh_mtu(&sub_matches)
+				ssh_mtu: get_ssh_mtu(&sub_matches),
+				http_mtu: get_http_mtu(&sub_matches)
             }).await
         },
         Some(("client", sub_matches)) => {
@@ -76,7 +84,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = start_client(&ClientConfig {
                 server_url,
 				password: get_password(&sub_matches),
-				ssh_mtu: get_ssh_mtu(&sub_matches)
+				ssh_mtu: get_ssh_mtu(&sub_matches),
+				http_mtu: get_http_mtu(&sub_matches)
             }).await;
             Ok(())
         },
