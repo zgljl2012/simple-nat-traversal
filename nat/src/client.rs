@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use log::{debug, error, info, warn};
 use tokio::{sync::{RwLock, mpsc::{self}}, net::TcpStream, time, select, io::AsyncWriteExt};
 
-use crate::{Message, http::handle_http, utils, SSHStatus, Context, crypto};
+use crate::{Message, http::{handle_http, self}, utils, SSHStatus, Context, crypto};
 
 // Client protocol
 pub struct NatClient {
@@ -242,8 +242,10 @@ impl NatClient {
 									let batch_size = &ctx.get_http_mtu();
 									let mut i = 0;
 									let bytes = res.as_bytes().to_vec();
+									let req: http::HttpRequest = bytes.as_slice().into();
 									loop {
-										tx.write().await.send(Message::new_http(msg.tracing_id, bytes[i..(i+batch_size)].to_vec())).unwrap();
+										let end = std::cmp::min(bytes.len(), i+ batch_size);
+										tx.write().await.send(Message::new_http(msg.tracing_id, bytes[i..end].to_vec(), req.content_length)).unwrap();
 										i += batch_size;
 										if i >= bytes.len() {
 											break;

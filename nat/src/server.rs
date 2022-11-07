@@ -3,7 +3,7 @@ use std::{sync::Arc, collections::HashMap, time::Duration};
 use log::{debug, info, error, warn};
 use tokio::{sync::{RwLock, mpsc::{UnboundedSender, UnboundedReceiver, self}}, select, net::{TcpStream, TcpListener}, io::{AsyncReadExt, AsyncWriteExt}, time};
 
-use crate::{Message, parse_protocol, utils::{get_packet_from_stream, self}, SSHStatus, Context, crypto};
+use crate::{Message, parse_protocol, utils::{get_packet_from_stream, self}, SSHStatus, Context, crypto, http};
 
 #[derive(Debug)]
 struct Connection {
@@ -289,7 +289,8 @@ impl NatServer {
 						// 组装 http 数据，发送给 Nat Client message channel
 						let bytes = get_packets(&conn);
 						self.tracing_seq += 1;
-						let msg = Message::new_http(Some(self.tracing_seq), bytes);
+						let request = http::HttpRequest::from(bytes.as_slice());
+						let msg = Message::new_http(Some(self.tracing_seq), bytes, request.content_length);
 						connections.insert(self.tracing_seq, conn.stream);
 						ncm_tx.write().await.send(msg).unwrap();
 					},

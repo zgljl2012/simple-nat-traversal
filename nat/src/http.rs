@@ -38,6 +38,8 @@ pub struct HttpRequest {
     pub user_agent: String,
     pub accept: String,
     pub proxy_connection: String,
+	pub content_type: String,
+	pub content_length: u32,
 	pub data: Option<String>,
 }
 
@@ -69,9 +71,18 @@ impl HttpRequest {
             user_agent: headers.get("User-Agent").unwrap_or(&"".to_string()).clone(),
             accept: headers.get("Accept").unwrap_or(&"".to_string()).clone(),
             proxy_connection: headers.get("Proxy-Connection").unwrap_or(&"".to_string()).clone(),
+			content_type: headers.get("Content-Type").unwrap_or(&"text/plain".to_string()).clone(),
+			content_length: headers.get("Content-Length").unwrap_or(&"0".to_string()).clone().parse::<u32>().unwrap(),
 			data,
         }
     }
+}
+
+impl From<&[u8]> for HttpRequest {
+	fn from(v: &[u8]) -> HttpRequest {
+		let text = std::str::from_utf8(v).unwrap();
+		HttpRequest::from_utf8(text)
+	}
 }
 
 pub async fn handle_http(msg: &Message) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {

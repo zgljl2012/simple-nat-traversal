@@ -3,7 +3,7 @@ use std::vec;
 use log::{debug, error, warn};
 use tokio::net::TcpStream;
 
-use crate::{protocols::ProtocolType, utils, checksum::{self}, Context, crypto::{encrypt, decrypt}};
+use crate::{protocols::ProtocolType, utils::{self}, checksum::{self}, Context, crypto::{encrypt, decrypt}};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SSHStatus {
@@ -42,13 +42,13 @@ const NAT_AUTH_TIMEOUT: u8 = 0x6; // NAT auth timeout
 const NAT_AUTH_FAILED: u8 = 0x7; // NAT auth failed
 
 impl Message {
-    pub fn new_http(tracing_id: Option<u32>, body: Vec<u8>) -> Self {
+    pub fn new_http(tracing_id: Option<u32>, body: Vec<u8>, content_type: u32) -> Self {
         Self {
             protocol: ProtocolType::HTTP,
             body,
 			tracing_id: tracing_id,
 			ssh_status: None,
-			content_length: None,
+			content_length: Some(content_type),
         }
     }
 	pub fn new_ssh(tracing_id: Option<u32>, body: Vec<u8>) -> Self {
@@ -75,7 +75,7 @@ impl Message {
             body: "HTTP/1.1 502 Bad Gateway\r\n".as_bytes().to_vec(),
 			tracing_id: tracing_id,
 			ssh_status: None,
-			content_length: None,
+			content_length: Some(0),
         }
     }
     pub fn http_504(tracing_id: Option<u32>) -> Self {
@@ -84,7 +84,7 @@ impl Message {
             body: "HTTP/1.1 504 Bad Timeout\r\n".as_bytes().to_vec(),
 			tracing_id: tracing_id,
 			ssh_status: None,
-			content_length: None,
+			content_length: Some(0),
         }
     }
 
@@ -158,6 +158,15 @@ impl Message {
 					ssh_status = Some(SSHStatus::from_u8(status[0] as u8));
 				}
 
+				// If http, read the content length
+				let mut content_length: Option<u32> = None;
+				if protocol_type == ProtocolType::HTTP {
+					let mut cl = [0;4];
+					stream.try_read(&mut cl).unwrap();
+					bytes.append(&mut cl.clone().to_vec());
+					content_length = Some(utils::as_u32_be(&cl)?);
+				}
+
                 // Read other bytes
                 let mut data = Vec::with_capacity(data_size as usize);
 				let mut rest: usize = data_size as usize;
@@ -196,7 +205,7 @@ impl Message {
                     body: decrypted,
 					tracing_id,
 					ssh_status,
-					content_length: None,
+					content_length,
                 }))
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
@@ -234,12 +243,18 @@ impl Message {
 				}
 			},
 		};
+		// content length for HTTP connection
+		let content_length: Vec<u8> = match &self.content_length {
+			Some(content_length) => utils::u32_to_be(content_length.clone()).to_vec(),
+			None => vec![]
+		};
         let mut r: Vec<u8> = [
             &size_arr,
 			&init_checksum,
             self.protocol.bytes().to_vec().as_slice(),
 			tracing_id.as_slice(),
 			ssh_status.as_slice(),
+			content_length.as_slice(),
             encrypted.as_slice(),
         ]
         .concat();
