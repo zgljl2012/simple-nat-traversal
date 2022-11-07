@@ -5,15 +5,17 @@ use crate::crypto::kdf;
 pub struct Context {
 	secret: [u8; 32], // Generate by KDF and password
 	ssh_mtu: u16,
-	http_mtu: u16
+	http_mtu: u16,
+	subnet: String,
 }
 
 impl Context {
-	pub fn new(password: String, ssh_mtu: u16, http_mtu: u16) -> Result<Self, Box<dyn std::error::Error>> {
+	pub fn new(password: String, ssh_mtu: u16, http_mtu: u16, subnet: String) -> Result<Self, Box<dyn std::error::Error>> {
 		Ok(Self {
 			secret: kdf(&password)?,
 			ssh_mtu,
-			http_mtu
+			http_mtu,
+			subnet
 		})
 	}
 
@@ -27,6 +29,10 @@ impl Context {
 
 	pub fn get_http_mtu(&self) -> usize {
 		self.http_mtu as usize
+	}
+
+	pub fn get_subnet(&self) -> String {
+		self.subnet.clone()
 	}
 }
 

@@ -16,6 +16,7 @@ fn cli() -> Command {
 	let password = arg!(-P - -password <PASSWORD> "Password of server").required(true);
 	let ssh_mtu = arg!(-M - -"ssh-mtu" <SSH_MTU> "MTU of the SSH packet per packet").required(false).value_parser(clap::value_parser!(u16).range(64..2048));
 	let http_mtu = arg!(--"http-mtu" <HTTP_MTU> "MTU of the HTTP packet per packet").required(false).value_parser(clap::value_parser!(u16).range(64..2048));
+	let subnet = arg!(--"subnet" <SUBNET> "Subnet").required(false);
 	Command::new("Simple NAT Traversal")
         .about("NAT tool")
         .subcommand_required(true)
@@ -28,6 +29,7 @@ fn cli() -> Command {
 			   .arg(&password)
 			   .arg(&ssh_mtu)
 			   .arg(&http_mtu)
+			   .arg(&subnet)
         )
         .subcommand(
             Command::new("client")
@@ -37,6 +39,7 @@ fn cli() -> Command {
 			   .arg(&password)
 			   .arg(&ssh_mtu)
 			   .arg(&http_mtu)
+			   .arg(&subnet)
         )
 }
 
@@ -51,6 +54,11 @@ fn get_ssh_mtu(sub_matches: &ArgMatches) -> u16 {
 fn get_http_mtu(sub_matches: &ArgMatches) -> u16 {
 	sub_matches.get_one::<u16>("http-mtu").unwrap_or(&1024).clone()
 }
+
+fn get_subnet(sub_matches: &ArgMatches) -> String {
+	sub_matches.get_one::<String>("subnet").unwrap_or(&"127.0.0.1/32".to_string()).to_string()
+}
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -73,7 +81,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 host: h,
 				password: get_password(&sub_matches),
 				ssh_mtu: get_ssh_mtu(&sub_matches),
-				http_mtu: get_http_mtu(&sub_matches)
+				http_mtu: get_http_mtu(&sub_matches),
+				subnet: get_subnet(&sub_matches)
             }).await
         },
         Some(("client", sub_matches)) => {
@@ -85,7 +94,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 server_url,
 				password: get_password(&sub_matches),
 				ssh_mtu: get_ssh_mtu(&sub_matches),
-				http_mtu: get_http_mtu(&sub_matches)
+				http_mtu: get_http_mtu(&sub_matches),
+				subnet: get_subnet(&sub_matches)
             }).await;
             Ok(())
         },

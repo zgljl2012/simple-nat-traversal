@@ -1,5 +1,6 @@
-use std::{sync::Arc, collections::HashMap, time::Duration};
+use std::{sync::Arc, collections::HashMap, time::Duration, net::SocketAddr};
 
+use ip_in_subnet::iface_in_subnet;
 use log::{debug, info, error, warn};
 use tokio::{sync::{RwLock, mpsc::{UnboundedSender, UnboundedReceiver, self}}, select, net::{TcpStream, TcpListener}, io::{AsyncReadExt, AsyncWriteExt}, time};
 
@@ -69,7 +70,7 @@ impl NatServer {
         }
     }
 
-    async fn handle_client(&self, mut stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+    async fn handle_client(&self, mut stream: TcpStream, socket_addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
 		// Parse the first line
 		let mut buffer = [0;64];
 		// 读取server发过来的内容
@@ -91,6 +92,18 @@ impl NatServer {
 				return Ok(())
 			}
 		};
+		if protocol.name() != "NAT" {
+			match iface_in_subnet(socket_addr.ip().to_string().as_str(), self.ctx.get_subnet().as_str()) {
+				Ok(r) => {
+					if !r {
+						return Err(format!("IP {:?} not allowed", socket_addr).into());
+					}
+				},
+				Err(_) => {
+					return Err(format!("IP {:?} not allowed", socket_addr).into());
+				},
+			};
+		}
 		info!("You connected to this server with protocol: {}", protocol.name());
 		if protocol.name() == "NAT" {
 			// Send stream to NAT client channel
@@ -146,9 +159,10 @@ impl NatServer {
 				},
 				// Socket comming
 				socket = listener.accept() => match socket {
-					Ok((stream, _)) => {
-						info!("Connections count: {:?}", connections.len());
-						match self.handle_client(stream).await {
+					Ok((stream, socket_addr)) => {
+						debug!("New connection coming from {}", socket_addr);
+						debug!("Connections count: {:?}", connections.len());
+						match self.handle_client(stream, socket_addr).await {
 							Ok(_) => {},
 							Err(e) => {
 								error!("Handle client error: {:?}", e);

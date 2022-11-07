@@ -5,7 +5,8 @@ pub struct ServerConfig {
     pub port: u16,
 	pub password: String,
 	pub ssh_mtu: u16,
-	pub http_mtu: u16
+	pub http_mtu: u16,
+	pub subnet: String,
 }
 
 
@@ -15,7 +16,7 @@ pub async fn start_server(config: &ServerConfig) -> Result<(), Box<dyn std::erro
         config.host,
         config.port
     );
-	let ctx = Context::new(config.password.clone(), config.ssh_mtu, config.http_mtu)?;
+	let ctx = Context::new(config.password.clone(), config.ssh_mtu, config.http_mtu, config.subnet.clone())?;
 	// Start listening
 	NatServer::new(ctx).run_forever(format!("{}:{:?}", config.host, config.port).as_str()).await
 }
