@@ -1,6 +1,10 @@
+use std::sync::Arc;
+
 use log::{error, debug};
-use tokio::net::TcpStream;
+use tokio::{net::TcpStream, sync::{RwLock, mpsc::UnboundedSender}};
 use rand::Rng;
+
+use crate::{Message, Connection};
 
 // 大端序(Big endian)，字节转 u32
 pub fn as_u32_be(array: &[u8]) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
@@ -60,6 +64,44 @@ pub fn get_packet_from_stream(stream: &TcpStream) -> Vec<u8> {
 
 pub fn random_bytes() -> [u8;4] {
 	u32_to_be(rand::thread_rng().gen::<u32>())
+}
+
+pub async fn send_ssh_by_batch(tracing_id: u32, batch_size: usize, tx: Arc<RwLock<UnboundedSender<Message>>>, bytes: &[u8]) {
+	let mut i: usize = 0;
+	loop {
+		let mut end = i + batch_size;
+		if end > bytes.len() {
+			end = bytes.len();
+		}
+		tx.write().await.send(Message::new_ssh(Some(tracing_id), bytes[i..end].to_vec())).unwrap();	
+		i += batch_size;
+		if i >= bytes.len() {
+			break;
+		}
+	}
+}
+
+pub async fn get_packets(conn: Arc<RwLock<Connection>>) -> Vec<u8> {
+	// 获取所有请求报文
+	let mut buffer = [0;1024];
+	let mut bytes:Vec<u8> = Vec::new();
+	let mut init_buf = conn.read().await.init_buf.clone();
+	bytes.append(&mut init_buf);
+	loop {
+		match conn.write().await.stream.try_read(&mut buffer) {
+			Ok(0) => break,
+			Ok(n) => {
+				bytes.append(&mut buffer[0..n].to_vec());
+			},
+			Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+			Err(err) => {
+				error!("Read failed: {:?}", err);
+				break;
+			}
+		};
+	}
+	debug!("request size: {:?}", bytes.len());
+	bytes
 }
 
 #[cfg(test)]

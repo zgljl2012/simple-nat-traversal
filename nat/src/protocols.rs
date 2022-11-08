@@ -2,6 +2,8 @@
 
 use std::{fmt::{Display, self}};
 
+use tokio::net::TcpStream;
+
 pub trait Protocol {
     fn validate(&self, line: String) -> bool;
     fn name(&self) -> &str;
@@ -125,6 +127,12 @@ pub fn parse_protocol(line: String) -> Result<Box<dyn Protocol>, &'static str> {
         }
     }
     Err("Don't support this tcp connect")
+}
+
+#[derive(Debug)]
+pub struct Connection {
+	pub init_buf: Vec<u8>, // 因为最开始会读取一行判断协议，故此处需加上
+	pub stream: TcpStream,
 }
 
 #[cfg(test)]

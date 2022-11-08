@@ -4,36 +4,7 @@ use ip_in_subnet::iface_in_subnet;
 use log::{debug, info, error, warn};
 use tokio::{sync::{RwLock, mpsc::{UnboundedSender, UnboundedReceiver, self}}, select, net::{TcpStream, TcpListener}, io::{AsyncReadExt, AsyncWriteExt}, time};
 
-use crate::{Message, parse_protocol, utils::{get_packet_from_stream, self}, SSHStatus, Context, crypto, cache};
-
-#[derive(Debug)]
-struct Connection {
-	pub init_buf: Vec<u8>, // 因为最开始会读取一行判断协议，故此处需加上
-	pub stream: TcpStream,
-}
-
-fn get_packets(conn: &Connection) -> Vec<u8> {
-	// 获取所有请求报文
-	let mut buffer = [0;1024];
-	let mut bytes:Vec<u8> = Vec::new();
-	let mut init_buf = conn.init_buf.clone();
-	bytes.append(&mut init_buf);
-	loop {
-		match conn.stream.try_read(&mut buffer) {
-			Ok(0) => break,
-			Ok(n) => {
-				bytes.append(&mut buffer[0..n].to_vec());
-			},
-			Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-			Err(err) => {
-				error!("Read failed: {:?}", err);
-				break;
-			}
-		};
-	}
-	debug!("request size: {:?}", bytes.len());
-	bytes
-}
+use crate::{Message, parse_protocol, utils::{get_packet_from_stream, self, get_packets}, SSHStatus, Context, crypto, cache, Connection, http_handler::HttpHandler};
 
 pub struct NatServer {
 	ctx: Context,
@@ -138,13 +109,9 @@ impl NatServer {
 		// Reply from client channel
 		let (client_reply_tx, mut client_reply_rx) = mpsc::unbounded_channel::<Message>();
 		let client_reply_tx = Arc::new(RwLock::new(client_reply_tx));
-		// Http connections
-		let mut connections: HashMap<u32, TcpStream> = HashMap::new();
 		// Failed to connect to the client 
 		let (cc_failed_tx, mut cc_failed_rx) = mpsc::unbounded_channel::<bool>();
 		let cc_failed_tx = Arc::new(RwLock::new(cc_failed_tx));
-		// Connection remove channel
-		let (remove_conn_tx, mut remove_conn_rx) = mpsc::unbounded_channel::<u32>();
 		// SSH connection message sender
 		let mut ssh_conns_tx: HashMap<u32, UnboundedSender<Message>> = HashMap::new();
 		// SSH disconnected
@@ -154,6 +121,9 @@ impl NatServer {
 		// 缓存没有读完的 http response
 		let http_cache: Arc<RwLock<cache::Cache<u32, Message>>> = Arc::new(RwLock::new(cache::Cache::new(Duration::from_secs(10))));
 		let mut interval = time::interval(Duration::from_secs(5));
+
+		// Http Handler
+		let mut http_protocol = HttpHandler::new(ncm_tx.clone(), self.ctx.get_ssh_mtu());
 		loop {
             select! {
 				_ = interval.tick() => {
@@ -167,7 +137,6 @@ impl NatServer {
 				socket = listener.accept() => match socket {
 					Ok((stream, socket_addr)) => {
 						debug!("New connection coming from {}", socket_addr);
-						debug!("Connections count: {:?}", connections.len());
 						match self.handle_client(stream, socket_addr).await {
 							Ok(_) => {},
 							Err(e) => {
@@ -339,18 +308,9 @@ impl NatServer {
 					},
 					Some(conn) => {
 						// 组装 http 数据，发送给 Nat Client message channel
-						let bytes = get_packets(&conn);
+						let conn = Arc::new(RwLock::new(conn));
 						self.tracing_seq += 1;
-						let bytes_len = bytes.len() as u32;
-						let mut i: usize = 0;
-						let batch_size = self.ctx.get_http_mtu() as usize;
-						connections.insert(self.tracing_seq, conn.stream);
-						while i < bytes_len as usize {
-							let end = std::cmp::min(i + batch_size, bytes_len as usize);
-							let msg = Message::new_http(Some(self.tracing_seq), bytes[i..end].to_vec(), bytes_len);						
-							ncm_tx.write().await.send(msg).unwrap();
-							i += batch_size;
-						}
+						http_protocol.handle(self.tracing_seq, conn.clone()).await;
 					},
 					None => {
 						error!("Http client stream from channel is none");
@@ -362,8 +322,9 @@ impl NatServer {
 						warn!("Not exists nat client, shutdown this connections");
 						let _ = &conn.stream.shutdown().await;
 					},
-					Some(mut conn) => {
-						let bytes = get_packets(&conn);
+					Some(conn) => {
+						let conn = Arc::new(RwLock::new(conn));
+						let bytes = get_packets(conn.clone()).await;
 						self.tracing_seq += 1;
 						let tracing_id = self.tracing_seq.clone();
 						let msg = Message::new_ssh(Some(tracing_id), bytes);
@@ -377,6 +338,7 @@ impl NatServer {
 						let ncm_tx = ncm_tx.clone();
 						let ssh_disconnected_tx = ssh_disconnected_tx.clone();
 						tokio::spawn(async move {
+							let mut conn = conn.write().await;
 							loop {
 								select! {
 									// Read from stream
@@ -463,45 +425,11 @@ impl NatServer {
 						},
 						Some(id) => {
 							// Reply from client, according tracing_id, send to specified stream
-							let stream = connections.get(&id);
-							match stream {
-								Some(stream) => {
-									debug!("Received HTTP reply from client: {:?}", msg.to_utf8());
-									match stream.writable().await {
-										Ok(_) => {},
-										Err(err) => {
-											error!("Wait stream for reply failed: {:?}, remove it", err);
-											remove_conn_tx.send(id).unwrap();
-										}
-									};
-									match stream.try_write(&msg.body.as_slice()) {
-										Ok(_) => {
-											debug!("write message to stream successfully");
-											// shutdown
-											if msg.is_http() {
-												remove_conn_tx.send(id).unwrap();
-											}
-										}
-										Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-										Err(e) => {
-											error!("Write response to stream failed: {:?}", e);
-										}
-									}
-								},
-								None => {
-									error!("Tracing ID {:?} does not exist", id);
-								}
-							}
+							http_protocol.handle_reply(id, &msg).await;
 						},
 						None => {
 							error!("Message which be http but without tracing ID")
 						}
-					},
-					None => {}
-				},
-				id = remove_conn_rx.recv() => match id {
-					Some(id) => {
-						connections.remove(&id);
 					},
 					None => {}
 				},

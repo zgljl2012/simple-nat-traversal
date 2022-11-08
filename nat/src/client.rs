@@ -48,7 +48,6 @@ impl NatClient {
 		// 缓存没有读完的 http response
 		let http_cache: Arc<RwLock<cache::Cache<u32, Message>>> = Arc::new(RwLock::new(cache::Cache::new(Duration::from_secs(10))));
 		loop {
-			info!("---->>>>>1");
             select! {
 				// PING interval
 				_ = interval.tick() => {
@@ -139,18 +138,7 @@ impl NatClient {
 															break;
 														}
 														// 将报文按固定字节分批次发送，有利于服务稳定
-														let mut i: usize = 0;
-														loop {
-															let mut end = i + batch_size;
-															if end > bytes.len() {
-																end = bytes.len();
-															}
-															ssh_tx.write().await.send(Message::new_ssh(tracing_id, bytes[i..end].to_vec())).unwrap();	
-															i += batch_size;
-															if i >= bytes.len() {
-																break;
-															}
-														}
+														utils::send_ssh_by_batch(tracing_id.unwrap(), batch_size, ssh_tx.clone(), &bytes).await;
 													},
 													Err(e) => {
 														error!("Local SSH disconnected: {:?}", e);
