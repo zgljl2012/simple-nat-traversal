@@ -31,6 +31,9 @@ impl<K, V> Cache<K, V> where K: Eq + Hash, V: Clone {
 			data: HashMap::new()
 		}
 	}
+	pub fn len(&self) -> usize {
+		self.data.len()
+	}
 	pub fn contains_key(&self, key: &K) -> bool {
 		self.data.contains_key(key)
 	}

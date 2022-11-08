@@ -126,7 +126,11 @@ impl NatServer {
 
     pub async fn run_forever(&mut self, url: &str) -> Result<(), Box<dyn std::error::Error>> {
 		// Create TCP server
-		let listener = TcpListener::bind(url).await?;
+		let listener = match TcpListener::bind(url).await {
+			Ok(listener) => listener,
+			Err(err) => return Err(format!("Bind TcpStream failed: {:?}", err).into())
+		};
+		log::info!("starting server at url: {}", url);
 		// Send to NAT client message channel
 		let (ncm_tx, ncm_rx) = mpsc::unbounded_channel::<Message>();
 		let ncm_rx = Arc::new(RwLock::new(ncm_rx));
@@ -154,8 +158,10 @@ impl NatServer {
             select! {
 				_ = interval.tick() => {
 					// clear cache
-					debug!("Clear cache");
-					http_cache.write().await.compact().await;
+					if http_cache.read().await.len() > 0 {
+						debug!("Clear cache");
+						http_cache.write().await.compact().await;
+					}
 				},
 				// Socket comming
 				socket = listener.accept() => match socket {

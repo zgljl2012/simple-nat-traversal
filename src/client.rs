@@ -3,17 +3,17 @@ use std::{time::Duration, thread};
 
 use nat::{NatClient, Context};
 
+use crate::common::BaseConfig;
+
 pub struct ClientConfig {
     pub server_url: String,
-	pub password: String,
-	pub ssh_mtu: u16,
-	pub http_mtu: u16,
-	pub subnet: String,
+	pub base: BaseConfig,
 }
 
 pub async fn start_client(config: &ClientConfig) -> Result<(), Box<dyn std::error::Error>> {
     log::info!("starting NAT client: {}", config.server_url);
-	let ctx = Context::new(config.password.clone(), config.ssh_mtu, config.http_mtu, config.subnet.clone())?;
+	let ctx = Context::new(config.base.password.clone(),
+		config.base.ssh_mtu, config.base.http_mtu, config.base.subnet.clone())?;
 	let mut client = NatClient::new(config.server_url.as_str(), ctx).await.unwrap();
 	loop {
 		match client.run_forever().await {

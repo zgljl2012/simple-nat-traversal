@@ -3,10 +3,12 @@
 //! Open `http://localhost:8080/` in browser to test.
 
 use clap::{Command, arg, ArgMatches};
+use common::BaseConfig;
 use log::error;
 use server::{start_server, ServerConfig};
 use client::{start_client, ClientConfig};
 
+mod common;
 mod client;
 mod server;
 
@@ -59,6 +61,15 @@ fn get_subnet(sub_matches: &ArgMatches) -> String {
 	sub_matches.get_one::<String>("subnet").unwrap_or(&"127.0.0.1/32".to_string()).to_string()
 }
 
+fn get_base_config(sub_matches: &ArgMatches) -> BaseConfig {
+	BaseConfig {
+		password: get_password(&sub_matches),
+		ssh_mtu: get_ssh_mtu(&sub_matches),
+		http_mtu: get_http_mtu(&sub_matches),
+		subnet: get_subnet(&sub_matches),
+	}
+}
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -76,14 +87,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some(host) => host.clone(),
                 None => "127.0.0.1".to_string(),
             };
-            start_server(&ServerConfig {
+            match start_server(&ServerConfig {
                 port: p,
                 host: h,
-				password: get_password(&sub_matches),
-				ssh_mtu: get_ssh_mtu(&sub_matches),
-				http_mtu: get_http_mtu(&sub_matches),
-				subnet: get_subnet(&sub_matches)
-            }).await
+				base: get_base_config(sub_matches)
+            }).await {
+				Ok(()) => {},
+				Err(err) => {
+					panic!("Start server failed: {:?}", err);
+				}
+			};
+			Ok(())
         },
         Some(("client", sub_matches)) => {
             let server_url = match sub_matches.get_one::<String>("server-url") {
@@ -92,10 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let _ = start_client(&ClientConfig {
                 server_url,
-				password: get_password(&sub_matches),
-				ssh_mtu: get_ssh_mtu(&sub_matches),
-				http_mtu: get_http_mtu(&sub_matches),
-				subnet: get_subnet(&sub_matches)
+				base: get_base_config(sub_matches)
             }).await;
             Ok(())
         },
