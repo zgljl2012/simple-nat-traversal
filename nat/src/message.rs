@@ -1,7 +1,7 @@
-use std::vec;
+use std::{vec, time::{Duration, SystemTime}};
 
 use log::{debug, error, warn};
-use tokio::net::TcpStream;
+use tokio::{net::TcpStream};
 
 use crate::{protocols::ProtocolType, utils::{self}, checksum::{self}, Context, crypto::{encrypt, decrypt}};
 
@@ -170,10 +170,14 @@ impl Message {
                 // Read other bytes
                 let mut data = Vec::with_capacity(data_size as usize);
 				let mut rest: usize = data_size as usize;
+				// 5 秒超时
+				let ttl = Duration::from_secs(5);
+				let mut timeout_at: Option<SystemTime> = None;
 				loop {
 					let mut buf: Vec<u8> = Vec::with_capacity(rest);
 					match stream.try_read_buf(&mut buf) {
 						Ok(n) => {
+							timeout_at = None;
 							data.append(&mut buf[0..n].to_vec());
 							if data.len() >= data_size as usize {
 								break;
@@ -181,14 +185,17 @@ impl Message {
 							rest -= n;
 						},
 						Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-							warn!("Message data should receive {} bytes, still have {} bytes not received, but stream maybe blocked, so break the loop", data.len(), rest);
-							break;
+							// 如果超时，则报错
+							if timeout_at.is_some() && SystemTime::now().duration_since(timeout_at.unwrap()).unwrap().lt(&ttl) {
+								warn!("Message data should receive {} bytes, still have {} bytes not received, but stream maybe blocked, so break the loop", data.len(), rest);
+								break;	
+							}
 						},
 						Err(e) => {
 							error!("Read error: {}", e);
 							break;
 						},
-					};
+					}
 				}
 				bytes.append(&mut data.to_vec());
 				// Validate checksum
