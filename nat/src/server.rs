@@ -213,23 +213,20 @@ impl NatServer {
 							let mut ncm_rx = ncm_rx.write().await;
 							let cc_failed_tx = cc_failed_tx.write().await;
 							// 超时未认证，则关闭连接
-							let (timeout_tx, mut timeout_rx) = mpsc::unbounded_channel::<bool>();
-							tokio::spawn(async move {
-								time::sleep(Duration::from_secs(5)).await;
-								timeout_tx.send(true).unwrap();
-							});
 							let mut auth_success = false;
+							let mut interval = time::interval(Duration::from_secs(5));
+							let mut ticker = 0;
 							loop {
 								select! {
-									_ = timeout_rx.recv() => {
-										if auth_success {
-											continue;
+									_ = interval.tick() => {
+										if ticker == 1 && !auth_success {
+											error!("Nat client auth timeout");
+											let _ = Message::nat_auth_timeout().write_to(&ctx, &stream).await;
+											let _ = stream.shutdown();
+											cc_failed_tx.send(true).unwrap();
+											return;
 										}
-										error!("Nat client auth timeout");
-										let _ = Message::nat_auth_timeout().write_to(&ctx, &stream).await;
-										let _ = stream.shutdown();
-										cc_failed_tx.send(true).unwrap();
-										return;
+										ticker += 1;
 									},
 									// 读取消息，发送给 Client
 									msg = ncm_rx.recv() => match msg {
@@ -247,70 +244,80 @@ impl NatServer {
 										None => {}
 									},
 									// 从 Client 读取消息
-									_ = stream.readable() => match Message::from_stream(&ctx, &stream).await {
-										Ok(msg) => match msg {
-											Some(msg) if msg.is_auth() => {
-												let secret = match msg.get_encrypted_bytes_by_client() {
-													Ok(bytes) => bytes,
-													Err(e) => {
-														error!("Read auth message from client failed: {}", e);
-														// Close the connection
+									r = stream.readable() => match r {
+										Ok(_) => match Message::from_stream(&ctx, &stream).await {
+											Ok(msg) => match msg {
+												Some(msg) if msg.is_auth() => {
+													info!("Client auth...");
+													let secret = match msg.get_encrypted_bytes_by_client() {
+														Ok(bytes) => bytes,
+														Err(e) => {
+															error!("Read auth message from client failed: {}", e);
+															// Close the connection
+															let _ = Message::nat_auth_failed().write_to(&ctx, &stream).await;
+															let _ = stream.shutdown();
+															cc_failed_tx.send(true).unwrap();
+															break;
+														}
+													};
+													// decrypt it
+													let decrypted = crypto::decrypt(ctx.get_secret(), secret.to_vec());
+													// 验证是否解密正确
+													if utils::as_u32_be(&random_bytes_for_clinet).unwrap() == utils::as_u32_be(&decrypted).unwrap() {
+														info!("Client auth successfully");
+														auth_success = true;
+													} else {
 														let _ = Message::nat_auth_failed().write_to(&ctx, &stream).await;
 														let _ = stream.shutdown();
 														cc_failed_tx.send(true).unwrap();
 														break;
 													}
-												};
-												// decrypt it
-												let decrypted = crypto::decrypt(ctx.get_secret(), secret.to_vec());
-												// 验证是否解密正确
-												if utils::as_u32_be(&random_bytes_for_clinet).unwrap() == utils::as_u32_be(&decrypted).unwrap() {
-													info!("Client auth successfully");
-													auth_success = true;
-												} else {
-													let _ = Message::nat_auth_failed().write_to(&ctx, &stream).await;
-													let _ = stream.shutdown();
-													cc_failed_tx.send(true).unwrap();
-													break;
-												}
-											},
-											Some(msg) if msg.is_ping() => {
-												// 如果收到 Ping，就直接 Pong
-												debug!("You received PING from NAT client");
-												ncm_tx.write().await.send(Message::pong()).unwrap();
-											},
-											Some(msg) if msg.is_http() => {
-												debug!("Received HTTP Response from client");
-												// 根据 packet_size，进行分包读取
-												let packet_size = msg.packet_size.unwrap_or(msg.body.len() as u32);
-												let tracing_id = msg.tracing_id.unwrap_or(0);
-												if http_cache.read().await.contains_key(&tracing_id) || packet_size > msg.body.len() as u32 {
-													// 需要分包读取
-													let mut cached = http_cache.read().await.get(&tracing_id).unwrap_or(Message::new_http(Some(tracing_id), vec![], packet_size));
-													cached.body = vec![cached.body, msg.body.clone()].concat();
-													if packet_size <= cached.body.len() as u32 {
-														// 清理缓存
-														http_cache.write().await.remove(&tracing_id);
-														// 发送真正的 Message
-														let _ = client_reply_tx.write().await.send(cached);
+												},
+												Some(msg) if msg.is_ping() => {
+													// 如果收到 Ping，就直接 Pong
+													debug!("You received PING from NAT client");
+													ncm_tx.write().await.send(Message::pong()).unwrap();
+												},
+												Some(msg) if msg.is_http() => {
+													debug!("Received HTTP Response from client");
+													// 根据 packet_size，进行分包读取
+													let packet_size = msg.packet_size.unwrap_or(msg.body.len() as u32);
+													let tracing_id = msg.tracing_id.unwrap_or(0);
+													if http_cache.read().await.contains_key(&tracing_id) || packet_size > msg.body.len() as u32 {
+														// 需要分包读取
+														let mut cached = http_cache.read().await.get(&tracing_id).unwrap_or(Message::new_http(Some(tracing_id), vec![], packet_size));
+														cached.body = vec![cached.body, msg.body.clone()].concat();
+														if packet_size <= cached.body.len() as u32 {
+															// 清理缓存
+															http_cache.write().await.remove(&tracing_id);
+															// 发送真正的 Message
+															let _ = client_reply_tx.write().await.send(cached);
+														} else {
+															http_cache.write().await.put(tracing_id, cached);
+														}
 													} else {
-														http_cache.write().await.put(tracing_id, cached);
+														let _ = client_reply_tx.write().await.send(msg);
 													}
-												} else {
+												},
+												Some(msg) if msg.is_ssh() => {
+													info!("Received SSH Response from client");
 													let _ = client_reply_tx.write().await.send(msg);
+												},
+												Some(msg) => {
+													debug!("Received {:?} {:?}", msg.protocol, msg.body);
+												}
+												None => {
+													info!("Empty message from client");
 												}
 											},
-											Some(msg) if msg.is_ssh() => {
-												info!("Received SSH Response from client");
-												let _ = client_reply_tx.write().await.send(msg);
+											Err(err) => {
+												error!("{}", err);
+												cc_failed_tx.send(true).unwrap();
+												break;
 											},
-											Some(msg) => {
-												debug!("Received {:?} {:?}", msg.protocol, msg.body);
-											}
-											None => {}
 										},
 										Err(err) => {
-											error!("{}", err);
+											error!("Read from cliend failed {}", err);
 											cc_failed_tx.send(true).unwrap();
 											break;
 										},

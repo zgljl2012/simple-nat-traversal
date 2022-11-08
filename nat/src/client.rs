@@ -53,9 +53,9 @@ impl NatClient {
 				_ = interval.tick() => {
 					// Send ping
 					debug!("Send PING to server");
-					tx.write().await.send(Message::ping()).unwrap();
+					// tx.write().await.send(Message::ping()).unwrap();
 					// clear cache
-					http_cache.write().await.compact().await;
+					// http_cache.write().await.compact().await;
 				},
 				// 从服务端接收请求
                 _ = stream.readable() => match Message::from_stream(&self.ctx, &stream).await {
