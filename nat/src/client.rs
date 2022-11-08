@@ -48,14 +48,15 @@ impl NatClient {
 		// 缓存没有读完的 http response
 		let http_cache: Arc<RwLock<cache::Cache<u32, Message>>> = Arc::new(RwLock::new(cache::Cache::new(Duration::from_secs(10))));
 		loop {
+			info!("---->>>>>1");
             select! {
 				// PING interval
 				_ = interval.tick() => {
 					// Send ping
 					debug!("Send PING to server");
-					// tx.write().await.send(Message::ping()).unwrap();
+					tx.write().await.send(Message::ping()).unwrap();
 					// clear cache
-					// http_cache.write().await.compact().await;
+					http_cache.write().await.compact().await;
 				},
 				// 从服务端接收请求
                 _ = stream.readable() => match Message::from_stream(&self.ctx, &stream).await {
