@@ -248,19 +248,7 @@ impl NatClient {
 							match handle_http(&msg).await {
 								Ok(res) => {
 									// Send to server
-									// 根据 http_mtu 分包发送，server 端根据 content-length 进行读取
-									let batch_size = &ctx.get_http_mtu();
-									let mut i = 0;
-									let bytes = res.as_bytes().to_vec();
-									let bytes_len = bytes.len() as u32;
-									loop {
-										let end = std::cmp::min(bytes.len(), i+ batch_size);
-										tx.write().await.send(Message::new_http(msg.tracing_id, bytes[i..end].to_vec(), bytes_len)).unwrap();
-										i += batch_size;
-										if i >= bytes.len() {
-											break;
-										}
-									}
+									utils::send_http_by_batch(msg.tracing_id.unwrap(), ctx.get_http_mtu(), tx.clone(), res.as_bytes().to_vec()).await;
 								},
 								Err(e) => {
 									error!("Redirect http request failed: {:?}", e);

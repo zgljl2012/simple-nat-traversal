@@ -81,6 +81,20 @@ pub async fn send_ssh_by_batch(tracing_id: u32, batch_size: usize, tx: Arc<RwLoc
 	}
 }
 
+pub async fn send_http_by_batch(tracing_id: u32, batch_size: usize, tx: Arc<RwLock<UnboundedSender<Message>>>, bytes: Vec<u8>) {
+	// 根据 http_mtu 分包发送，server 端根据 content-length 进行读取
+	let mut i = 0;
+	let bytes_len = bytes.len() as u32;
+	loop {
+		let end = std::cmp::min(bytes.len(), i+ batch_size);
+		tx.write().await.send(Message::new_http(Some(tracing_id), bytes[i..end].to_vec(), bytes_len)).unwrap();
+		i += batch_size;
+		if i >= bytes.len() {
+			break;
+		}
+	}
+}
+
 pub async fn get_packets(conn: Arc<RwLock<Connection>>) -> Vec<u8> {
 	// 获取所有请求报文
 	let mut buffer = [0;1024];

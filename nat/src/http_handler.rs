@@ -21,21 +21,16 @@ impl HttpHandler {
 		}
 	}
 
-	pub async fn handle(&mut self, tracing_seq: u32, conn: Arc<RwLock<Connection>>) {
+	pub async fn handle(&mut self, tracing_id: u32, conn: Arc<RwLock<Connection>>) {
+		// 处理请求的 Http，转发给 Nat Client
 		let bytes = utils::get_packets(conn.clone()).await;
-		let bytes_len = bytes.len() as u32;
-		let mut i: usize = 0;
 		let batch_size = self.http_mtu as usize;
-		self.connections.insert(tracing_seq, conn);
-		while i < bytes_len as usize {
-			let end = std::cmp::min(i + batch_size, bytes_len as usize);
-			let msg = Message::new_http(Some(tracing_seq), bytes[i..end].to_vec(), bytes_len);						
-			self.ncm_tx.write().await.send(msg).unwrap();
-			i += batch_size;
-		}
+		self.connections.insert(tracing_id, conn);
+		utils::send_http_by_batch(tracing_id, batch_size, self.ncm_tx.clone(), bytes).await;
 	}
 
 	pub async fn handle_reply(&mut self, id: u32, msg: &Message) {
+		// 收到 Nat Client 的回复，返回给访问者
 		let connections = self.connections.clone();
 		let conn = connections.get(&id);
 		match conn {
