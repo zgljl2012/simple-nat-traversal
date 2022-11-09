@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use log::{debug, error, info, warn};
 use tokio::{sync::{RwLock, mpsc::{self}}, net::TcpStream, time, select, io::AsyncWriteExt};
 
-use crate::{Message, http::{handle_http}, utils, SSHStatus, Context, crypto, cache};
+use crate::{Message, http::{handle_http}, utils, SSHStatus, Context, crypto, cache, ssh_handler::SSHClientHandler};
 
 // Client protocol
 pub struct NatClient {
@@ -44,9 +44,10 @@ impl NatClient {
         };
 		// Create ping timer
 		let mut interval = time::interval(Duration::from_secs(5));
-		let batch_size: usize = self.ctx.get_ssh_mtu();
 		// 缓存没有读完的 http response
 		let http_cache: Arc<RwLock<cache::Cache<u32, Message>>> = Arc::new(RwLock::new(cache::Cache::new(Duration::from_secs(10))));
+		// SSH Handler
+		let ssh_handler = SSHClientHandler::new(self.ctx.get_ssh_mtu(), ssh_tx.clone(), ssh_rx_reverse.clone());
 		loop {
             select! {
 				// PING interval
@@ -93,6 +94,7 @@ impl NatClient {
 							http_tx.send(msg).unwrap();
 						},
 						// SSH 消息，且当前未创建本地 SSH
+						// 检查当前是否已有 SSH 连接，如果没有，先创建连接，连接不停等待
 						Some(msg) if msg.is_ssh() && !*ssh_existed.read().await => {
 							info!("Received SSH request from server");
 							// 检查进来的流量是否为请求建立 SSH，如果不是，则忽略
@@ -101,74 +103,7 @@ impl NatClient {
 									warn!("Dirty SSH message")
 								},
 								Ok(_) => {
-									// 检查当前是否已有 SSH 连接，如果没有，先创建连接，连接不停等待
-									let ssh_tx = ssh_tx.clone();
-									let bytes = msg.body.clone();
-									let tracing_id = msg.tracing_id.clone();
-									let ssh_rx_reverse = ssh_rx_reverse.clone();
-									tokio::spawn(async move {
-										let target = "127.0.0.1:22";
-										let mut stream = match TcpStream::connect(&target).await {
-											Ok(stream) => stream,
-											Err(e) => {
-												error!("Connect to local SSH server failed: {}", e);
-												ssh_tx.write().await.send(Message::new_ssh_error(tracing_id)).unwrap();
-												return;
-											}
-										};
-										match stream.try_write(&bytes) {
-											Ok(_) => {}
-											Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-											Err(e) => {
-												error!("Write response to SSH stream failed: {:?}", e);
-												ssh_tx.write().await.send(Message::new_ssh_error(tracing_id)).unwrap();
-												return;
-											}
-										};
-										let mut ssh_rx_reverse = ssh_rx_reverse.write().await;
-										loop {
-											select! {
-												r = stream.readable() => match r {
-													Ok(_) => {
-														// 获取所有请求报文
-														let bytes = utils::get_packet_from_stream(&stream);
-														info!("Get SSH reply from local: {:?}", bytes.len());
-														if bytes.len() == 0 {
-															ssh_tx.write().await.send(Message::new_ssh_error(tracing_id)).unwrap();
-															break;
-														}
-														// 将报文按固定字节分批次发送，有利于服务稳定
-														utils::send_ssh_by_batch(tracing_id.unwrap(), batch_size, ssh_tx.clone(), &bytes).await;
-													},
-													Err(e) => {
-														error!("Local SSH disconnected: {:?}", e);
-														ssh_tx.write().await.send(Message::new_ssh_error(tracing_id)).unwrap();
-														break;
-													}
-												},
-												msg = ssh_rx_reverse.recv() => match msg {
-													Some(msg) => {
-														if msg.ssh_status != Some(SSHStatus::Ok) {
-															error!("The SSH connection of server have been disconnected, so close the SSH connection of client");
-															let _ = stream.shutdown();
-															break;
-														}
-														match stream.try_write(&msg.body) {
-															Ok(n) => {
-																info!("Write to local SSH: {:?}", n);
-															},
-															Err(e) => {
-																error!("Write response to SSH stream failed: {:?}", e);
-																ssh_tx.write().await.send(Message::new_ssh_error(tracing_id)).unwrap();
-																break;
-															}
-														};
-													},
-													None => {}
-												}
-											}
-										}
-									});
+									ssh_handler.run_backend(msg).await;
 									*ssh_existed.write().await = true;
 								},
 								Err(_) => {
@@ -192,6 +127,8 @@ impl NatClient {
 					},
 					Err(err) => {
 						error!("Read from server failed: {:?}", err);
+						// Stop SSH handler
+						ssh_handler.stop().await;
 						break;
 					},
 				},
