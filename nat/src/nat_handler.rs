@@ -5,14 +5,14 @@ use tokio::{time, select, sync::{RwLock, mpsc::{UnboundedSender, UnboundedReceiv
 use crate::{Message, Context, crypto, utils, cache};
 
 
-pub struct NatHandler {
+pub struct NatServerHandler {
 	ncm_tx: Arc<RwLock<UnboundedSender<Message>>>,
 	ncm_rx: Arc<RwLock<UnboundedReceiver<Message>>>,
 	cc_failed_tx: Arc<RwLock<UnboundedSender<bool>>>,
 	client_reply_tx:  Arc<RwLock<UnboundedSender<Message>>>
 }
 
-impl NatHandler {
+impl NatServerHandler {
 	pub fn new(
 		ncm_tx: Arc<RwLock<UnboundedSender<Message>>>,
 		ncm_rx: Arc<RwLock<UnboundedReceiver<Message>>>,

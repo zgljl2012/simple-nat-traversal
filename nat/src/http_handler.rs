@@ -5,14 +5,14 @@ use tokio::{sync::{RwLock, mpsc::UnboundedSender}};
 use crate::{utils, Connection, Message};
 
 
-pub struct HttpHandler {
+pub struct HttpServerHandler {
 	connections: HashMap<u32, Arc<RwLock<Connection>>>,
 	http_mtu: usize,
 	ncm_tx: Arc<RwLock<UnboundedSender<Message>>>
 }
 
-impl HttpHandler {
-	pub fn new(ncm_tx: Arc<RwLock<UnboundedSender<Message>>>, http_mtu: usize) -> HttpHandler {
+impl HttpServerHandler {
+	pub fn new(ncm_tx: Arc<RwLock<UnboundedSender<Message>>>, http_mtu: usize) -> HttpServerHandler {
 		let connections: HashMap<u32, Arc<RwLock<Connection>>> = HashMap::new();
 		Self {
 			connections,

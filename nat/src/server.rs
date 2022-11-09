@@ -4,7 +4,7 @@ use ip_in_subnet::iface_in_subnet;
 use log::{debug, info, error, warn};
 use tokio::{sync::{RwLock, mpsc::{UnboundedSender, UnboundedReceiver, self}}, select, net::{TcpStream, TcpListener}, io::{AsyncReadExt, AsyncWriteExt}};
 
-use crate::{Message, parse_protocol, utils::{get_packet_from_stream, get_packets}, SSHStatus, Context, Connection, http_handler::HttpHandler, nat_handler::NatHandler};
+use crate::{Message, parse_protocol, utils::{get_packet_from_stream, get_packets}, SSHStatus, Context, Connection, http_handler::HttpServerHandler, nat_handler::NatServerHandler};
 
 pub struct NatServer {
 	ctx: Context,
@@ -120,9 +120,9 @@ impl NatServer {
 		let batch_size = self.ctx.get_ssh_mtu();
 
 		// Http Handler
-		let mut http_protocol = HttpHandler::new(ncm_tx.clone(), self.ctx.get_ssh_mtu());
+		let mut http_protocol = HttpServerHandler::new(ncm_tx.clone(), self.ctx.get_ssh_mtu());
 		// Nat Handler
-		let nat_handler = Arc::new(RwLock::new(NatHandler::new(
+		let nat_handler = Arc::new(RwLock::new(NatServerHandler::new(
 			ncm_tx.clone(),
 			ncm_rx.clone(),
 			cc_failed_tx.clone(),
