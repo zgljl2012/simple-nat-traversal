@@ -173,7 +173,7 @@ impl Message {
 				// 5 秒超时
 				let ttl = Duration::from_secs(5);
 				let mut timeout_at: Option<SystemTime> = None;
-				loop {
+				while rest > 0 {
 					let mut buf: Vec<u8> = Vec::with_capacity(rest);
 					match stream.try_read_buf(&mut buf) {
 						Ok(n) => {

@@ -31,6 +31,7 @@ impl SSHServerHandler {
 	}
 
 	pub async fn run_server_backend(&self, tracing_id: u32, conn: Arc<RwLock<Connection>>) {
+		log::info!("New SSH connection, currently count is {}", self.ssh_conns_tx.read().await.len());
 		let bytes = get_packets(conn.clone()).await;
 		let msg = Message::new_ssh(Some(tracing_id), bytes);
 		let ncm_tx = self.ncm_tx.clone();
@@ -65,6 +66,8 @@ impl SSHServerHandler {
 						},
 						Err(e) => {
 							log::error!("SSH disconnected: {}", e);
+							// 通知 Client 端，断开 SSH 连接
+							ncm_tx.write().await.send(Message::new_ssh_error(Some(tracing_id))).unwrap();
 							break;
 						}
 					},
