@@ -31,6 +31,7 @@ impl<K, V> Cache<K, V> where K: Eq + Hash, V: Clone {
 			data: HashMap::new()
 		}
 	}
+	#[allow(unused)]
 	pub fn len(&self) -> usize {
 		self.data.len()
 	}

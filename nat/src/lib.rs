@@ -9,6 +9,7 @@ mod context;
 mod crypto;
 mod cache;
 mod http_handler;
+mod nat_handler;
 
 // pub use nat::*;
 pub use protocols::*;
