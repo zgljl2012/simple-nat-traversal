@@ -185,8 +185,12 @@ impl Message {
 							rest -= n;
 						},
 						Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+							// 开始计时
+							if timeout_at.is_none() {
+								timeout_at = Some(SystemTime::now());
+							}
 							// 如果超时，则报错
-							if timeout_at.is_some() && SystemTime::now().duration_since(timeout_at.unwrap()).unwrap().lt(&ttl) {
+							if timeout_at.is_some() && SystemTime::now().duration_since(timeout_at.unwrap()).unwrap().gt(&ttl) {
 								warn!("Message data should receive {} bytes, still have {} bytes not received, but stream maybe blocked, so break the loop", data.len(), rest);
 								break;	
 							}

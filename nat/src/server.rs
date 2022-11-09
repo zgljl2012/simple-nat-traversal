@@ -276,7 +276,7 @@ impl NatServer {
 													debug!("Received {:?} {:?}", msg.protocol, msg.body);
 												}
 												None => {
-													info!("Empty message from client");
+													debug!("Empty message from client");
 												}
 											},
 											Err(err) => {
