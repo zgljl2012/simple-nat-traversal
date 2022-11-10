@@ -11,8 +11,6 @@ pub struct NatServer {
     // Nat client channel
 	nat_client_tx: UnboundedSender<TcpStream>,
 	nat_client_rx: UnboundedReceiver<TcpStream>,
-	// Connected client count
-	nat_client_cnt: usize,
 	// Http client channel
 	http_conn_tx: UnboundedSender<Connection>,
 	http_conn_rx: UnboundedReceiver<Connection>,
@@ -32,7 +30,6 @@ impl NatServer {
 			ctx,
 			nat_client_rx,
 			nat_client_tx,
-			nat_client_cnt: 0,
 			http_conn_rx,
 			http_conn_tx,
 			ssh_conn_rx,
@@ -109,9 +106,6 @@ impl NatServer {
 		// Reply from client channel
 		let (client_reply_tx, mut client_reply_rx) = mpsc::unbounded_channel::<Message>();
 		let client_reply_tx = Arc::new(RwLock::new(client_reply_tx));
-		// Failed to connect to the client 
-		let (cc_failed_tx, mut cc_failed_rx) = mpsc::unbounded_channel::<bool>();
-		let cc_failed_tx = Arc::new(RwLock::new(cc_failed_tx));
 
 		// Http Handler
 		let mut http_protocol = HttpServerHandler::new(
@@ -121,7 +115,6 @@ impl NatServer {
 		let nat_handler = Arc::new(RwLock::new(NatServerHandler::new(
 			ncm_tx.clone(),
 			ncm_rx.clone(),
-			cc_failed_tx.clone(),
 			client_reply_tx.clone()
 		)));
 		// SSH Handler
@@ -148,7 +141,7 @@ impl NatServer {
 				},
 				// Nat connection
 				nat_client_stream = self.nat_client_rx.recv() => match nat_client_stream {
-					Some(mut stream) if self.nat_client_cnt > 0 => {
+					Some(mut stream) if nat_handler.read().await.client_existed().await => {
 						// 检测当前是否已有连接
 						error!("Only support only one NAT client at a time");
 						let _ = Message::nat_reject().write_to(&self.ctx, &stream).await;
@@ -158,9 +151,7 @@ impl NatServer {
 					Some(stream) => {
 						// Nat client coming
 						match nat_handler.write().await.run_server_backend(self.ctx.clone(), stream).await {
-							Ok(_) => {
-								self.nat_client_cnt += 1;
-							},
+							Ok(_) => {},
 							Err(err) => {
 								log::error!("Run nat server failed: {}", err);
 							}
@@ -172,7 +163,7 @@ impl NatServer {
 				},
 				// HTTP connection
 				http_conn = self.http_conn_rx.recv() => match http_conn {
-					Some(mut conn) if self.nat_client_cnt == 0 => {
+					Some(mut conn) if !nat_handler.read().await.client_existed().await => {
 						// 如果当前没有 nat_client 连接，则返回 502 错误
 						warn!("Not exists nat client, shutdown this connections");
 						let _ = &conn.stream.shutdown().await;
@@ -189,7 +180,7 @@ impl NatServer {
 				},
 				// SSH connection coming
 				ssh_conn = self.ssh_conn_rx.recv() => match ssh_conn {
-					Some(mut conn) if self.nat_client_cnt == 0 => {
+					Some(mut conn) if !nat_handler.read().await.client_existed().await => {
 						warn!("Not exists nat client, shutdown this connections");
 						let _ = &conn.stream.shutdown().await;
 					},
@@ -218,12 +209,6 @@ impl NatServer {
 						}
 					},
 					None => {}
-				},
-				_ = cc_failed_rx.recv() => {
-					// Client disconnected
-					error!("Nat Client disconnected");
-					// 将 ncm_rx 中消息全部清空掉
-					self.nat_client_cnt -= 1;
 				}
             }
         }
