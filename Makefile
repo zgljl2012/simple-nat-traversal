@@ -4,3 +4,9 @@ simple-server:
 
 cloc:
 	@gocloc --not-match-d="target" .
+
+top-server:
+	@./scripts/top-server.sh
+
+top-client:
+	@./scripts/top-client.sh
