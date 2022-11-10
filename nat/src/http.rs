@@ -71,7 +71,7 @@ impl HttpRequest {
             user_agent: headers.get("User-Agent").unwrap_or(&"".to_string()).clone(),
             accept: headers.get("Accept").unwrap_or(&"".to_string()).clone(),
             proxy_connection: headers.get("Proxy-Connection").unwrap_or(&"".to_string()).clone(),
-			content_type: headers.get("Content-Type").unwrap_or(&"text/plain".to_string()).clone(),
+			content_type: headers.get("Content-Type").unwrap_or(&"application/json".to_string()).clone(),
 			content_length: headers.get("Content-Length").unwrap_or(&"0".to_string()).clone().parse::<u32>().unwrap(),
 			data,
         }
@@ -117,10 +117,9 @@ pub async fn handle_http(msg: &Message) -> Result<String, Box<dyn std::error::Er
 	// Support post
 	if req.request_line.has_body() {
 		let s = req.data.unwrap_or("".to_string());
-		let data = s.as_str().clone();
 		request = client.post(req.request_line.url.clone())
 			.header("Content-Type", "application/json")
-			.body(format!("{:?}", data));
+			.body(format!("{}", s.as_str().clone()));
 	}
 	let body = match request.send().await {
 		Ok(json) => json,
