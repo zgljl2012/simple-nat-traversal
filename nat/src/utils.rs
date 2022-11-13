@@ -97,7 +97,7 @@ pub async fn send_http_by_batch(tracing_id: u32, batch_size: usize, tx: Arc<RwLo
 
 pub async fn get_packets(conn: Arc<RwLock<Connection>>) -> Vec<u8> {
 	// 获取所有请求报文
-	let mut buffer = [0;1024];
+	let mut buffer = [0;256];
 	let mut bytes:Vec<u8> = Vec::new();
 	let mut init_buf = conn.read().await.init_buf.clone();
 	bytes.append(&mut init_buf);

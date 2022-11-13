@@ -166,11 +166,11 @@ impl NatClient {
 						// 分包读取 http request
 						let tracing_id = msg.tracing_id.unwrap_or(0);
 						let packet_size = msg.packet_size.unwrap_or(msg.body.len() as u32);
-						let mut msg = msg.clone();
+						let mut msg = msg;
 						if http_cache.read().await.contains_key(&tracing_id) || packet_size > msg.body.len() as u32 {
 							// 需要分包读取
 							let mut cached = http_cache.read().await.get(&tracing_id).unwrap_or(Message::new_http(Some(tracing_id), vec![], packet_size));
-							cached.body = vec![cached.body, msg.body.clone()].concat();
+							cached.body = vec![cached.body, msg.body].concat();
 							if packet_size <= cached.body.len() as u32 {
 								// 清理缓存
 								http_cache.write().await.remove(&tracing_id);

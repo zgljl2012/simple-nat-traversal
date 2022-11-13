@@ -91,7 +91,6 @@ pub async fn handle_http(msg: &Message) -> Result<String, Box<dyn std::error::Er
 		.unwrap()
 		.trim_matches('\u{0}')
 		.to_string();
-	debug!("{}", text);
 	let req = HttpRequest::from_utf8(text.as_str());
 
 	if req.request_line.url == "Unknown" {
